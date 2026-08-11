@@ -8,11 +8,12 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "font_family": "Segoe UI",
-    "font_size": 26,
+    "font_size": 24,
     "font_bold": True,
     "text_color": "#FFFFFF",
     "bg_color": "#000000",
     "bg_opacity": 0,
+    "border_enabled": False,     # Borderless by default as requested
     "shadow_enabled": True,
     "shadow_color": "#000000",
     "shadow_blur": 8,
@@ -21,14 +22,14 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "always_on_top": True,
     "lock_position": False,
     "window_width": 800,
-    "window_height": 160,
-    "window_x": -1,           # -1 = not set / use system default
+    "window_height": 220,
+    "window_x": -1,              # -1 = not set / use system default
     "window_y": -1,
     "selected_media_source": "Auto-Detect",
-    "sync_offset_ms": 0,       # Timing nudge in milliseconds (-3000ms to +3000ms)
-    "multi_line_enabled": True, # Enable multi-line previous & upcoming lyrics context
-    "context_lines_above": 1,  # Number of previous lines to show (0 to 5)
-    "context_lines_below": 1   # Number of upcoming lines to show (0 to 5)
+    "sync_offset_ms": 0,          # Timing nudge in milliseconds (-5000ms to +5000ms)
+    "context_lines": 2,          # Unified context lines before & after current lyric line (0 to 5)
+    "auto_resize_height": True,   # Automatically adapt overlay height to current lyrics content
+    "animation_speed_ms": 400,    # Duration of smooth Spotify-style scroll animation (100 to 800ms)
 }
 
 PRESETS: Dict[str, Dict[str, Any]] = {
@@ -36,37 +37,56 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "text_color": "#FFFFFF",
         "bg_color": "#000000",
         "bg_opacity": 0,
+        "border_enabled": False,
         "shadow_enabled": True,
         "shadow_color": "#000000",
         "shadow_blur": 8,
-        "font_bold": True
+        "font_bold": True,
+        "context_lines": 2,
     },
-    "Cinematic Dark": {
-        "text_color": "#00F3FF",
-        "bg_color": "#121218",
-        "bg_opacity": 75,
+    "Spotify Dark": {
+        "text_color": "#1DB954",
+        "bg_color": "#121212",
+        "bg_opacity": 80,
+        "border_enabled": False,
         "shadow_enabled": True,
         "shadow_color": "#000000",
-        "shadow_blur": 12,
-        "font_bold": True
+        "shadow_blur": 10,
+        "font_bold": True,
+        "context_lines": 3,
     },
-    "Neon Glow": {
+    "Cinematic Cyan": {
+        "text_color": "#00F3FF",
+        "bg_color": "#0D0D14",
+        "bg_opacity": 75,
+        "border_enabled": False,
+        "shadow_enabled": True,
+        "shadow_color": "#00F3FF",
+        "shadow_blur": 14,
+        "font_bold": True,
+        "context_lines": 2,
+    },
+    "Neon Pink": {
         "text_color": "#FF007F",
         "bg_color": "#0A0A10",
-        "bg_opacity": 50,
+        "bg_opacity": 60,
+        "border_enabled": False,
         "shadow_enabled": True,
         "shadow_color": "#FF007F",
-        "shadow_blur": 18,
-        "font_bold": True
+        "shadow_blur": 16,
+        "font_bold": True,
+        "context_lines": 2,
     },
     "High Contrast": {
         "text_color": "#FFFF00",
         "bg_color": "#000000",
         "bg_opacity": 90,
+        "border_enabled": False,
         "shadow_enabled": False,
         "shadow_color": "#000000",
         "shadow_blur": 0,
-        "font_bold": True
+        "font_bold": True,
+        "context_lines": 1,
     }
 }
 

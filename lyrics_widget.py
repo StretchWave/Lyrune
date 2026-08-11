@@ -19,6 +19,7 @@ from lrc_parser import LRCParser
 from settings_manager import SettingsManager
 from settings_dialog import SettingsDialog
 from logger import log_event
+from animation_engine import LyricsRenderer
 
 
 def create_system_tray_icon() -> QIcon:
@@ -94,6 +95,7 @@ class LyricsWidget(QWidget):
 
         # Async lyrics worker
         self._lyrics_worker: Optional[LyricsFetchWorker] = None
+        self._retired_workers: List[LyricsFetchWorker] = []  # keep refs until QThreads finish
         self._pending_fetch_track: str = ""
 
         # Unsynced lyrics fallback
@@ -125,30 +127,13 @@ class LyricsWidget(QWidget):
 
         # Outer Layout
         self.outer_layout = QVBoxLayout(self)
-        self.outer_layout.setContentsMargins(14, 12, 14, 12)
-        self.outer_layout.setSpacing(8)
+        self.outer_layout.setContentsMargins(12, 10, 12, 10)
+        self.outer_layout.setSpacing(4)
 
-        # --- Lyrics Container Widget ---
-        self.lyrics_container = QWidget(self)
-        self.lyrics_container.setStyleSheet("background: transparent;")
-        self.container_layout = QVBoxLayout(self.lyrics_container)
-        self.container_layout.setContentsMargins(0, 0, 0, 0)
-        self.container_layout.setSpacing(6)
-
-        # --- Multi-Line Lyrics Layout ---
-        self.prev_lyric_label = QLabel("", self.lyrics_container)
-        self.prev_lyric_label.setWordWrap(True)
-        self.container_layout.addWidget(self.prev_lyric_label)
-
-        self.lyric_label = QLabel("Waiting for Spotify...", self.lyrics_container)
-        self.lyric_label.setWordWrap(True)
-        self.container_layout.addWidget(self.lyric_label)
-
-        self.next_lyric_label = QLabel("", self.lyrics_container)
-        self.next_lyric_label.setWordWrap(True)
-        self.container_layout.addWidget(self.next_lyric_label)
-
-        self.outer_layout.addWidget(self.lyrics_container)
+        # --- Custom Spotify-Style Lyrics Renderer ---
+        self.renderer = LyricsRenderer(self)
+        self.renderer.ideal_height_changed.connect(self._on_ideal_height_changed)
+        self.outer_layout.addWidget(self.renderer, 1)
 
         # --- Song Info Sub-Label ---
         self.sub_label = QLabel("", self)
@@ -157,18 +142,6 @@ class LyricsWidget(QWidget):
         self.sub_label.setVisible(False)
         self.outer_layout.addWidget(self.sub_label)
 
-        # Drop Shadow Effect for Active Line
-        self.shadow_effect = QGraphicsDropShadowEffect(self.lyric_label)
-        self.lyric_label.setGraphicsEffect(self.shadow_effect)
-
-        # Smooth Opacity Transition Animation Effect on Container
-        self._container_opacity = QGraphicsOpacityEffect(self.lyrics_container)
-        self.lyrics_container.setGraphicsEffect(self._container_opacity)
-
-        self._line_anim = QPropertyAnimation(self._container_opacity, b"opacity", self)
-        self._line_anim.setDuration(240)
-        self._line_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-
         self._last_active_index: int = -999
 
         # Size Grip
@@ -176,8 +149,12 @@ class LyricsWidget(QWidget):
         self.size_grip.setStyleSheet("background: transparent;")
         self.outer_layout.addWidget(self.size_grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
 
-        # Keyboard shortcut: Ctrl+Shift+L to toggle visibility
+        # Keyboard shortcut: Ctrl+Shift+L to toggle visibility.
+        # ApplicationShortcut context so it keeps working while the overlay is
+        # hidden (a WindowShortcut dies with its hidden parent window, so the
+        # documented hide/re-show cycle would otherwise be one-way).
         self._shortcut = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
+        self._shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._shortcut.activated.connect(self._toggle_widget_visibility)
 
         # Keyboard shortcuts: Ctrl+Left (-250ms sync nudge) / Ctrl+Right (+250ms sync nudge)
@@ -285,19 +262,70 @@ class LyricsWidget(QWidget):
         self.player.set_target_source(source_id)
 
     def _quit_application(self):
-        """Safely stops worker thread and exits application."""
+        """Safely stops worker thread, animations, and exits application."""
         # Save window position immediately before exit
         pos = self.pos()
         self.settings_mgr.settings["window_x"] = pos.x()
         self.settings_mgr.settings["window_y"] = pos.y()
         self.settings_mgr.save_immediate()
 
+        # Stop animation engine
+        if hasattr(self, 'anim_engine'):
+            self.anim_engine.stop_all()
+
         if hasattr(self, 'player'):
             self.player.stop_worker_thread()
+        self._stop_lyrics_workers()
         QApplication.instance().quit()
 
+    def _stop_lyrics_workers(self):
+        """Bounded wait for in-flight lyrics fetches so their QThreads are not
+        destroyed while still running when the app exits."""
+        workers = []
+        if getattr(self, '_lyrics_worker', None) and self._lyrics_worker.isRunning():
+            workers.append(self._lyrics_worker)
+        for w in getattr(self, '_retired_workers', []):
+            if w.isRunning():
+                workers.append(w)
+        for w in workers:
+            w.wait(3000)
+
+    def _on_ideal_height_changed(self, ideal_height: int):
+        """Adapt container window height to fit visible lyrics context lines."""
+        if self.settings_mgr.get("auto_resize_height", True):
+            extra = 28 if self.sub_label.isVisible() else 0
+            target_h = max(70, ideal_height + extra + 20)
+            if abs(self.height() - target_h) > 4:
+                self.resize(self.width(), target_h)
+
+    def _quit_application(self):
+        """Safely stops worker thread, animations, and exits application."""
+        pos = self.pos()
+        self.settings_mgr.settings["window_x"] = pos.x()
+        self.settings_mgr.settings["window_y"] = pos.y()
+        self.settings_mgr.save_immediate()
+
+        if hasattr(self, 'renderer'):
+            self.renderer.stop_all()
+
+        if hasattr(self, 'player'):
+            self.player.stop_worker_thread()
+        self._stop_lyrics_workers()
+        QApplication.instance().quit()
+
+    def _stop_lyrics_workers(self):
+        """Bounded wait for in-flight lyrics fetches so their QThreads are not
+        destroyed while still running when the app exits."""
+        workers = []
+        if getattr(self, '_lyrics_worker', None) and self._lyrics_worker.isRunning():
+            workers.append(self._lyrics_worker)
+        for w in getattr(self, '_retired_workers', []):
+            if w.isRunning():
+                workers.append(w)
+        for w in workers:
+            w.wait(3000)
+
     def closeEvent(self, event):
-        # Save position on close
         pos = self.pos()
         self.settings_mgr.settings["window_x"] = pos.x()
         self.settings_mgr.settings["window_y"] = pos.y()
@@ -313,12 +341,14 @@ class LyricsWidget(QWidget):
         self.player.set_target_source(target_src)
 
         always_top = s.get("always_on_top", True)
+        was_visible = self.isVisible()
         current_flags = self.windowFlags()
         if always_top:
             self.setWindowFlags(current_flags | Qt.WindowType.WindowStaysOnTopHint)
         else:
             self.setWindowFlags(current_flags & ~Qt.WindowType.WindowStaysOnTopHint)
-        self.show()
+        if was_visible:
+            self.show()
 
         if hasattr(self, 'action_top'):
             self.action_top.setChecked(always_top)
@@ -327,17 +357,6 @@ class LyricsWidget(QWidget):
         if hasattr(self, 'action_lock'):
             self.action_lock.setChecked(locked)
 
-        family = s.get("font_family", "Segoe UI")
-        size = s.get("font_size", 24)
-        bold = s.get("font_bold", True)
-
-        font_active = QFont(family, size, QFont.Weight.Bold if bold else QFont.Weight.Normal)
-        font_sub = QFont(family, max(10, int(size * 0.65)), QFont.Weight.Normal)
-
-        self.lyric_label.setFont(font_active)
-        self.prev_lyric_label.setFont(font_sub)
-        self.next_lyric_label.setFont(font_sub)
-
         align_str = s.get("text_align", "Center")
         if align_str == "Left":
             align_flag = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -345,13 +364,8 @@ class LyricsWidget(QWidget):
             align_flag = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         else:
             align_flag = Qt.AlignmentFlag.AlignCenter
-
-        self.prev_lyric_label.setAlignment(align_flag)
-        self.lyric_label.setAlignment(align_flag)
-        self.next_lyric_label.setAlignment(align_flag)
         self.sub_label.setAlignment(align_flag)
 
-        text_color = s.get("text_color", "#FFFFFF")
         bg_color = s.get("bg_color", "#000000")
         bg_opacity = s.get("bg_opacity", 0)
 
@@ -359,35 +373,28 @@ class LyricsWidget(QWidget):
         alpha = int((bg_opacity / 100.0) * 255)
         rgba_str = f"rgba({qbg.red()}, {qbg.green()}, {qbg.blue()}, {alpha / 255.0:.2f})"
 
-        # Convert text color to 45% opacity for previous/next context lines
-        qcol = QColor(text_color)
-        sub_color_str = f"rgba({qcol.red()}, {qcol.green()}, {qcol.blue()}, 0.45)"
-
-        self._update_widget_border(rgba_str)
-        self.lyric_label.setStyleSheet(f"color: {text_color}; background: transparent; border: none; padding: 6px 12px;")
-        self.prev_lyric_label.setStyleSheet(f"color: {sub_color_str}; background: transparent; border: none; padding: 4px 12px;")
-        self.next_lyric_label.setStyleSheet(f"color: {sub_color_str}; background: transparent; border: none; padding: 4px 12px;")
+        border_enabled = s.get("border_enabled", False)
+        self._base_bg_rgba = rgba_str
+        self._border_enabled = border_enabled
+        self._update_widget_border(rgba_str, border_enabled)
 
         show_info = s.get("show_song_info", True)
         self.sub_label.setVisible(show_info and bool(self.current_song_title))
 
-        shadow_enabled = s.get("shadow_enabled", True)
-        if shadow_enabled:
-            self.shadow_effect.setEnabled(True)
-            self.shadow_effect.setColor(QColor(s.get("shadow_color", "#000000")))
-            self.shadow_effect.setBlurRadius(s.get("shadow_blur", 8))
-            self.shadow_effect.setOffset(2, 2)
-        else:
-            self.shadow_effect.setEnabled(False)
+        # Update custom lyrics renderer
+        if hasattr(self, 'renderer'):
+            self.renderer.update_style(s)
 
-        # Cache the base style
-        self._base_bg_rgba = rgba_str
-
-    def _update_widget_border(self, bg_rgba: Optional[str] = None):
-        """Sets clean widget background without any hover popup border."""
+    def _update_widget_border(self, bg_rgba: Optional[str] = None, border: bool = False):
+        """Sets widget background with optional border."""
         if bg_rgba is None:
             bg_rgba = getattr(self, '_base_bg_rgba', 'transparent')
-        self.setStyleSheet(f"background-color: {bg_rgba}; border-radius: 10px; border: none;")
+        border_str = "border: 1px solid rgba(255, 255, 255, 0.12);" if border else "border: none;"
+        self.setStyleSheet(
+            f"background-color: {bg_rgba};"
+            f" border-radius: 10px;"
+            f" {border_str}"
+        )
 
     def _init_timer(self):
         self.timer = QTimer(self)
@@ -402,9 +409,8 @@ class LyricsWidget(QWidget):
         info = self.player.get_playback_info()
 
         if not info['is_running'] or not info['title']:
-            self._set_lyric_display("Waiting for Spotify...")
+            self.renderer.set_status("Waiting for Spotify...")
             if self.current_track_id is not None:
-                # Track was lost
                 self.current_track_id = None
                 self.current_song_title = ""
                 self.current_song_artist = ""
@@ -431,63 +437,51 @@ class LyricsWidget(QWidget):
             self._on_song_changed(artist, title)
 
         if status == "Paused":
-            # No repeated logging for paused state — throttled in logger
             return
-
-        above_cnt = self.settings_mgr.get("context_lines_above", 1)
-        below_cnt = self.settings_mgr.get("context_lines_below", 1)
-        multi_enabled = self.settings_mgr.get("multi_line_enabled", True)
-
-        if not multi_enabled:
-            above_cnt = 0
-            below_cnt = 0
 
         sync_offset_ms = self.settings_mgr.get("sync_offset_ms", 0)
         adjusted_position = max(0.0, position + (sync_offset_ms / 1000.0))
 
         if self.parser.has_lyrics():
-            prev_lines, curr_txt, next_lines, active_idx = self.parser.get_lyric_window(adjusted_position, above_cnt, below_cnt)
-            if curr_txt:
-                self._set_window_lyric_display(prev_lines, curr_txt, next_lines, active_idx)
-            else:
-                self._set_window_lyric_display([], "♪", next_lines, -1)
+            active_idx = self.parser.get_current_index(adjusted_position)
+            self.renderer.set_active_index(active_idx)
         elif self._unsynced_lyrics:
-            # Show unsynced lyrics as static text
-            self._set_window_lyric_display([], self._unsynced_lyrics, [], -1)
+            pass  # Already set in _on_lyrics_fetched
         else:
             if self._pending_fetch_track == track_id:
-                self._set_window_lyric_display([], "Loading lyrics...", [], -1)
+                pass
             else:
-                self._set_window_lyric_display([], "No synced lyrics found", [], -1)
+                self.renderer.set_status("No synced lyrics found")
 
     def _on_song_changed(self, artist: str, title: str):
-        """
-        Triggers async lyrics fetch on song change.
-        Non-blocking: runs HTTP requests on a background QThread.
-        """
-        self.parser.parse("")  # Clear old lyrics
+        """Triggers async lyrics fetch on song change with smooth fade transition."""
+        self.parser.parse("")
         self._unsynced_lyrics = ""
         self._pending_fetch_track = f"{artist} - {title}"
-        self._set_window_lyric_display([], "Loading lyrics...", [], -1)
 
-        # Cancel any existing fetch
+        def _mid_transition():
+            self.renderer.set_status("Loading lyrics...")
+
+        self.renderer.fade_out_then(_mid_transition)
+
         if self._lyrics_worker and self._lyrics_worker.isRunning():
-            self._lyrics_worker.requestInterruption()
-            self._lyrics_worker.wait(1000)
+            old = self._lyrics_worker
+            self._retired_workers.append(old)
+            old.finished.connect(
+                lambda w=old: self._retired_workers.remove(w)
+                if w in self._retired_workers else None
+            )
+            if old.isFinished():
+                self._retired_workers.remove(old)
 
-        # Start new async fetch
         self._lyrics_worker = LyricsFetchWorker(self.lrclib, artist, title)
         self._lyrics_worker.lyrics_ready.connect(self._on_lyrics_fetched)
         self._lyrics_worker.start()
 
     def _on_lyrics_fetched(self, artist: str, title: str, synced_lrc: str, unsynced_lrc: str):
-        """
-        Callback when lyrics fetch completes (runs on main thread via Qt signal).
-        Handles synced → unsynced → none fallback chain.
-        """
+        """Callback when lyrics fetch completes (runs on main thread via Qt signal)."""
         track_id = f"{artist} - {title}"
 
-        # Only apply if this is still the current song
         if track_id != self.current_track_id:
             log_event(f"[Lyrics Fetch] Discarding stale result for '{track_id}'")
             return
@@ -498,66 +492,30 @@ class LyricsWidget(QWidget):
             self.parser.parse(synced_lrc)
             if self.parser.has_lyrics():
                 log_event(f"✅ [Lyrics Found] Found {self.parser.line_count} synced timestamped lines for '{artist} - {title}'", force=True)
+                self.renderer.set_lines(self.parser.texts)
             else:
                 log_event(f"⚠️ [Lyrics Status] Synced data fetched but 0 valid timestamped lines for '{artist} - {title}'", force=True)
-                self._set_window_lyric_display([], "No synced lyrics found", [], -1)
+                self.renderer.set_status("No synced lyrics found")
         elif unsynced_lrc:
-            # Show first ~200 chars of unsynced lyrics as static text
-            self._unsynced_lyrics = unsynced_lrc[:200].strip()
-            if '\n' in self._unsynced_lyrics:
-                # Show just the first 2-3 lines
-                lines = self._unsynced_lyrics.split('\n')[:3]
-                self._unsynced_lyrics = '\n'.join(lines)
+            raw_lines = [line.strip() for line in unsynced_lrc.split('\n') if line.strip()]
+            self._unsynced_lyrics = "\n".join(raw_lines[:15])
             log_event(f"⚠️ [Lyrics Status] Found plain text unsynced lyrics for '{artist} - {title}'", force=True)
-            self._set_window_lyric_display([], self._unsynced_lyrics, [], -1)
+            self.renderer.set_lines(raw_lines[:15])
         else:
             log_event(f"❌ [Lyrics Not Found] Could not find lyrics on LRCLIB for '{artist} - {title}'", force=True)
-            self._set_window_lyric_display([], "No synced lyrics found", [], -1)
-
-    def _set_window_lyric_display(self, prev_lines: list, current_text: str, next_lines: list, active_index: int):
-        """
-        Updates multi-line lyric display with configurable above/below context lines.
-        Triggers smooth QPropertyAnimation OutCubic vertical morphing slide transition on line changes.
-        """
-        prev_text = "\n".join(prev_lines) if prev_lines else ""
-        next_text = "\n".join(next_lines) if next_lines else ""
-
-        # Check if active line index changed
-        if active_index != self._last_active_index or self.last_lyric_text != current_text:
-            self._last_active_index = active_index
-            self.last_lyric_text = current_text
-
-            # Update label texts
-            self.prev_lyric_label.setText(prev_text)
-            self.prev_lyric_label.setVisible(bool(prev_text))
-
-            self.lyric_label.setText(current_text)
-
-            self.next_lyric_label.setText(next_text)
-            self.next_lyric_label.setVisible(bool(next_text))
-
-            # Trigger smooth container opacity transition animation
-            if hasattr(self, '_line_anim'):
-                self._line_anim.stop()
-                self._line_anim.setStartValue(0.35)
-                self._line_anim.setEndValue(1.0)
-                self._line_anim.start()
-
-    def _set_3line_lyric_display(self, prev_text: str, current_text: str, next_text: str, active_index: int):
-        """Legacy compatibility wrapper."""
-        self._set_window_lyric_display([prev_text] if prev_text else [], current_text, [next_text] if next_text else [], active_index)
-
-    def _set_lyric_display(self, text: str):
-        """Legacy compatibility wrapper."""
-        self._set_3line_lyric_display("", text, "", -1)
+            self.renderer.set_status("No synced lyrics found")
 
     # --- Mouse Hover Events ---
     def enterEvent(self, event):
         self._is_hovered = True
+        if getattr(self, '_border_enabled', False):
+            self._update_widget_border(self._base_bg_rgba, border=True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._is_hovered = False
+        if not getattr(self, '_border_enabled', False):
+            self._update_widget_border(self._base_bg_rgba, border=False)
         super().leaveEvent(event)
 
     # --- System Tray Actions ---

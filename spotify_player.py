@@ -94,7 +94,6 @@ class MediaWorkerThread(QThread):
                     ctypes.windll.ole32.CoUninitialize()
                 except Exception:
                     pass
-            self._debug_log("Worker loop stopped")
             log_event("[MediaWorkerThread] Worker loop stopped, COM uninitialized.")
 
 
@@ -429,7 +428,14 @@ class SpotifyPlayer:
                             if not any(ign in lower_t for ign in ignored_keywords):
                                 if self._target_source != "Auto-Detect":
                                     lower_tgt = self._target_source.lower().strip()
-                                    if lower_tgt in lower_t or lower_t in lower_tgt or any(b in lower_tgt and b in lower_t for b in ['brave', 'spotify', 'chrome', 'edge', 'firefox']):
+                                    # Same rule as the GSMTC matcher: a target
+                                    # that is a specific session id must match the
+                                    # title exactly; otherwise any Brave/Chrome
+                                    # window (e.g. a movie-streaming tab) would be
+                                    # mistaken for the Spotify track.
+                                    is_session_id = '_crx_' in lower_tgt or '.exe' in lower_tgt
+                                    if (lower_tgt in lower_t or lower_t in lower_tgt or
+                                            (not is_session_id and any(b in lower_tgt and b in lower_t for b in ['brave', 'spotify', 'chrome', 'edge', 'firefox']))):
                                         found_title = norm_t
                                 else:
                                     # Matches Brave, Chrome, Edge, Firefox, or Spotify window titles
@@ -528,7 +534,16 @@ class SpotifyPlayer:
                         # Target source matching
                         if self._target_source != "Auto-Detect":
                             lower_target = self._target_source.lower().strip()
-                            if lower_target in app_id or app_id in lower_target or ('brave' in lower_target and 'brave' in app_id) or ('spotify' in lower_target and 'spotify' in app_id):
+                            # A target picked from the session list is a specific
+                            # app id (e.g. 'brave._crx_...'): only that exact
+                            # session must match, or a different Brave extension
+                            # session (say, an Instagram video) gets treated as
+                            # the track. The loose browser-family clause is only
+                            # a bridge for human-readable targets (window titles),
+                            # where it cannot select a wrong session.
+                            is_session_id = '_crx_' in lower_target or '.exe' in lower_target
+                            if (lower_target in app_id or app_id in lower_target or
+                                    (not is_session_id and (('brave' in lower_target and 'brave' in app_id) or ('spotify' in lower_target and 'spotify' in app_id)))):
                                 session, props = s, p
                                 clean_artist, clean_title = c_art, c_tit
                                 break
@@ -539,7 +554,7 @@ class SpotifyPlayer:
                             elif not best_fallback_session:
                                 best_fallback_session = (s, p, c_art, c_tit)
 
-                if not session and (self._target_source == "Auto-Detect" or not session):
+                if not session and self._target_source == "Auto-Detect":
                     chosen = best_playing_session or best_fallback_session
                     if chosen:
                         session, props, clean_artist, clean_title = chosen

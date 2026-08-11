@@ -182,9 +182,11 @@ class LRCLibClient:
             self._save_disk_cache(artist, title, synced, unsynced)
             log_event(f"[LRCLib] Cached {'synced' if synced else 'unsynced'} lyrics for '{artist} - {title}'")
         else:
-            # Cache the failure with TTL
+            # Cache the failure with TTL. Deliberately NOT stored in the
+            # in-memory cache: a permanent (None, None) entry would make the
+            # failure TTL dead code (every later lookup would short-circuit on
+            # the memory hit before ever reaching the retry check).
             self._failure_cache[key] = time.monotonic()
-            self._mem_cache[key] = result
             log_event(f"[LRCLib] No lyrics found for '{artist} - {title}' (will retry after {self.FAILURE_TTL}s)")
 
         return result

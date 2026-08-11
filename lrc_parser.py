@@ -155,6 +155,18 @@ class LRCParser:
         return len(self._timestamps)
 
     @property
+    def texts(self) -> List[str]:
+        """Returns all lyric line texts in chronological order (no timestamps)."""
+        return list(self._lyrics)
+
+    def get_current_index(self, current_time: float) -> int:
+        """Returns the index of the active lyric line for the given playback time, or -1."""
+        if not self._timestamps:
+            return -1
+        idx = bisect.bisect_right(self._timestamps, current_time) - 1
+        return max(-1, idx)
+
+    @property
     def lines(self) -> List[Tuple[float, str]]:
         """Legacy compatibility: returns list of (timestamp, lyric) tuples."""
         return list(zip(self._timestamps, self._lyrics))

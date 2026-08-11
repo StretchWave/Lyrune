@@ -209,7 +209,11 @@ class SettingsDialog(QDialog):
         self._init_behavior_tab()
         self.tabs.addTab(self.behavior_tab, " Behavior & Source")
 
-        # 4. Live Logs Tab
+        self.animations_tab = QWidget()
+        self._init_animations_tab()
+        self.tabs.addTab(self.animations_tab, "✨ Animations")
+
+        # 5. Live Logs Tab
         self.logs_tab = QWidget()
         self._init_logs_tab()
         self.logs_tab_index = self.tabs.addTab(self.logs_tab, "📋 Live Logs")
@@ -291,6 +295,10 @@ class SettingsDialog(QDialog):
         opacity_layout.addWidget(self.opacity_label)
         layout.addRow("Background Opacity:", opacity_layout)
 
+        self.border_check = QCheckBox("Enable Glass Border (Subtle outline around overlay)", self)
+        self.border_check.toggled.connect(self._on_control_changed)
+        layout.addRow("", self.border_check)
+
         self.shadow_check = QCheckBox("Enable Drop Shadow / Outline", self)
         self.shadow_check.toggled.connect(self._on_control_changed)
         layout.addRow("", self.shadow_check)
@@ -333,19 +341,16 @@ class SettingsDialog(QDialog):
         self.lock_check.toggled.connect(self._on_control_changed)
         layout.addRow("", self.lock_check)
 
-        self.multi_line_check = QCheckBox("Enable Multi-Line Lyrics Context", self)
-        self.multi_line_check.toggled.connect(self._on_control_changed)
-        layout.addRow("", self.multi_line_check)
+        self.context_lines_spin = QSpinBox(self)
+        self.context_lines_spin.setRange(0, 5)
+        self.context_lines_spin.setValue(2)
+        self.context_lines_spin.setToolTip("Number of context lyric lines shown before and after the active line (0 to 5).")
+        self.context_lines_spin.valueChanged.connect(self._on_control_changed)
+        layout.addRow("Context Lines (Before & After):", self.context_lines_spin)
 
-        self.context_above_spin = QSpinBox(self)
-        self.context_above_spin.setRange(0, 5)
-        self.context_above_spin.valueChanged.connect(self._on_control_changed)
-        layout.addRow("Lines Above Active Line:", self.context_above_spin)
-
-        self.context_below_spin = QSpinBox(self)
-        self.context_below_spin.setRange(0, 5)
-        self.context_below_spin.valueChanged.connect(self._on_control_changed)
-        layout.addRow("Lines Below Active Line:", self.context_below_spin)
+        self.auto_resize_check = QCheckBox("Auto-adapt Window Height to Fit Lyrics", self)
+        self.auto_resize_check.toggled.connect(self._on_control_changed)
+        layout.addRow("", self.auto_resize_check)
 
         self.sync_offset_spin = QSpinBox(self)
         self.sync_offset_spin.setRange(-5000, 5000)
@@ -354,6 +359,51 @@ class SettingsDialog(QDialog):
         self.sync_offset_spin.setToolTip("Nudge lyric timing earlier (negative) or later (positive). Shortcuts: Ctrl+Left / Ctrl+Right.")
         self.sync_offset_spin.valueChanged.connect(self._on_control_changed)
         layout.addRow("Sync Offset Adjustment:", self.sync_offset_spin)
+
+    def _init_animations_tab(self):
+        layout = QFormLayout(self.animations_tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(12)
+
+        # --- Spotify Scroll Animation Speed ---
+        speed_group = QGroupBox("Spotify Scroll Animation", self.animations_tab)
+        speed_layout = QFormLayout(speed_group)
+
+        speed_row = QHBoxLayout()
+        self.anim_speed_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.anim_speed_slider.setRange(100, 800)
+        self.anim_speed_slider.setTickInterval(50)
+        self.anim_speed_label = QLabel("400ms", self)
+        self.anim_speed_slider.valueChanged.connect(self._on_anim_speed_changed)
+        speed_row.addWidget(self.anim_speed_slider)
+        speed_row.addWidget(self.anim_speed_label)
+        speed_layout.addRow("Scroll Speed:", speed_row)
+
+        layout.addRow(speed_group)
+
+        # --- Preview Animation Button ---
+        self.btn_preview_anim = QPushButton("▶ Preview Scroll Animation", self)
+        self.btn_preview_anim.setObjectName("btn_primary")
+        self.btn_preview_anim.clicked.connect(self._preview_animation)
+        layout.addRow("", self.btn_preview_anim)
+
+    def _on_anim_speed_changed(self, val: int):
+        self.anim_speed_label.setText(f"{val}ms")
+        self._on_control_changed()
+
+    def _preview_animation(self):
+        """Cycles the preview through 3 sample lyrics to demonstrate the animation."""
+        import itertools
+        samples = [
+            "Yubikiri genman hora demo fuitara",
+            "Shinunoga e-wa anata to ireba",
+            "Kono mama zutto zutto hanasanaide",
+        ]
+        if not hasattr(self, '_preview_cycle'):
+            self._preview_cycle = itertools.cycle(samples)
+        next_lyric = next(self._preview_cycle)
+        self.preview_lyric.setText(next_lyric)
+        self._update_preview()
 
     def _on_source_combo_changed(self, index: int):
         if getattr(self, '_is_initializing', False) or index < 0:
@@ -512,15 +562,19 @@ class SettingsDialog(QDialog):
         self.opacity_slider.setValue(opacity)
         self.opacity_label.setText(f"{opacity}%")
 
+        self.border_check.setChecked(s.get("border_enabled", False))
         self.shadow_check.setChecked(s.get("shadow_enabled", True))
         self.shadow_blur_spin.setValue(s.get("shadow_blur", 8))
 
         self.top_check.setChecked(s.get("always_on_top", True))
         self.lock_check.setChecked(s.get("lock_position", False))
-        self.multi_line_check.setChecked(s.get("multi_line_enabled", True))
-        self.context_above_spin.setValue(s.get("context_lines_above", 1))
-        self.context_below_spin.setValue(s.get("context_lines_below", 1))
+        self.context_lines_spin.setValue(s.get("context_lines", 2))
+        self.auto_resize_check.setChecked(s.get("auto_resize_height", True))
         self.sync_offset_spin.setValue(s.get("sync_offset_ms", 0))
+
+        # Animation settings
+        self.anim_speed_slider.setValue(s.get("animation_speed_ms", 400))
+        self.anim_speed_label.setText(f"{s.get('animation_speed_ms', 400)}ms")
 
         self._refresh_media_sources()
 
@@ -552,6 +606,8 @@ class SettingsDialog(QDialog):
                 self._update_color_button(self.btn_bg_color, self._bg_color)
             if "bg_opacity" in preset:
                 self.opacity_slider.setValue(preset["bg_opacity"])
+            if "border_enabled" in preset:
+                self.border_check.setChecked(preset["border_enabled"])
             if "shadow_enabled" in preset:
                 self.shadow_check.setChecked(preset["shadow_enabled"])
             if "shadow_color" in preset:
@@ -561,6 +617,8 @@ class SettingsDialog(QDialog):
                 self.shadow_blur_spin.setValue(preset["shadow_blur"])
             if "font_bold" in preset:
                 self.bold_check.setChecked(preset["font_bold"])
+            if "context_lines" in preset:
+                self.context_lines_spin.setValue(preset["context_lines"])
             self._update_preview()
 
     def _update_preview(self):
@@ -586,7 +644,8 @@ class SettingsDialog(QDialog):
         alpha = int((s["bg_opacity"] / 100.0) * 255)
         rgba_str = f"rgba({qbg.red()}, {qbg.green()}, {qbg.blue()}, {alpha / 255.0:.2f})"
 
-        self.preview_container.setStyleSheet(f"background-color: {rgba_str}; border-radius: 8px;")
+        border_css = "border: 1px solid rgba(255, 255, 255, 0.15);" if s.get("border_enabled") else "border: none;"
+        self.preview_container.setStyleSheet(f"background-color: {rgba_str}; border-radius: 8px; {border_css}")
         self.preview_lyric.setStyleSheet(f"color: {s['text_color']}; background: transparent;")
 
         if s["shadow_enabled"]:
@@ -629,16 +688,17 @@ class SettingsDialog(QDialog):
             "text_color": self._text_color,
             "bg_color": self._bg_color,
             "bg_opacity": self.opacity_slider.value(),
+            "border_enabled": self.border_check.isChecked(),
             "shadow_enabled": self.shadow_check.isChecked(),
             "shadow_color": self._shadow_color,
             "shadow_blur": self.shadow_blur_spin.value(),
             "always_on_top": self.top_check.isChecked(),
             "lock_position": self.lock_check.isChecked(),
-            "multi_line_enabled": self.multi_line_check.isChecked(),
-            "context_lines_above": self.context_above_spin.value(),
-            "context_lines_below": self.context_below_spin.value(),
+            "context_lines": self.context_lines_spin.value(),
+            "auto_resize_height": self.auto_resize_check.isChecked(),
             "selected_media_source": selected_source_id or "Auto-Detect",
-            "sync_offset_ms": self.sync_offset_spin.value()
+            "sync_offset_ms": self.sync_offset_spin.value(),
+            "animation_speed_ms": self.anim_speed_slider.value(),
         }
 
     def _on_apply(self):
