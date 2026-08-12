@@ -162,11 +162,11 @@ class SettingsManager:
                     for k in orphaned:
                         del self.settings[k]
                     if orphaned:
-                        from logger import log_event
+                        from lyricscript.logger import log_event
                         log_event(f"[SettingsManager] Migrated out {len(orphaned)} orphaned key(s): {orphaned}")
                         self._write_to_disk()
             except Exception as e:
-                from logger import log_event
+                from lyricscript.logger import log_event
                 log_event(f"⚠️ [SettingsManager Warning] Corrupted settings file, falling back to defaults: {e}")
                 self.settings = dict(DEFAULT_SETTINGS)
         else:
@@ -186,7 +186,7 @@ class SettingsManager:
                     os.remove(tmp_path)
                 except Exception:
                     pass
-            from logger import log_event
+            from lyricscript.logger import log_event
             log_event(f"❌ [SettingsManager Exception] Failed to write settings to disk: {e}")
         self._dirty = False
 

@@ -1,218 +1,163 @@
-# LyricScript
+# LyricScript 🎵
 
-A lightweight desktop lyrics overlay for **Spotify**. LyricScript detects what you're playing, fetches synchronized lyrics from [LRCLIB](https://lrclib.net), and displays them in a frameless, always-on-top widget that sits over your desktop or games.
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/UI-PyQt6-green?style=for-the-badge&logo=qt&logoColor=white" alt="PyQt6">
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-orange?style=for-the-badge&logo=windows&logoColor=white" alt="Platform">
+  <img src="https://img.shields.io/badge/Lyrics-LRCLIB-purple?style=for-the-badge" alt="LRCLIB">
+  <img src="https://img.shields.io/badge/License-MIT-brightgreen?style=for-the-badge" alt="License">
+</p>
 
-Built with **Python** and **PyQt6**.
-
----
-
-## Features
-
-- **Synchronized lyrics** — LRC timestamp parsing with smooth line transitions and configurable context lines (previous/upcoming)
-- **Spotify integration** — Works with Spotify Desktop and web players (Brave, Chrome, Edge, Firefox, Opera)
-- **Cross-platform playback detection**
-  - **Windows:** Global System Media Transport Controls (GSMTC) via WinRT, with window-title fallback
-  - **Linux:** MPRIS over D-Bus (`dbus-python`, Gio, or `playerctl`)
-- **System tray app** — Runs in the background; control everything from the tray icon
-- **Fully customizable UI** — Fonts, colors, alignment, drop shadow, background opacity, and built-in theme presets
-- **Sync offset nudge** — Fine-tune lyric timing when lyrics are slightly early or late
-- **Smart lyrics lookup** — Exact match, fuzzy search, and cleaned-title fallbacks via LRCLIB; disk + in-memory caching
-- **Live diagnostic logs** — Built-in console for troubleshooting media detection and lyric fetching
+**LyricScript** is a sleek, lightweight desktop lyrics overlay for **Spotify** and Web Media Players (Brave, Chrome, Edge, Firefox, Opera). It automatically detects what you're playing, fetches synchronized timestamped lyrics from [LRCLIB](https://lrclib.net), and presents them in a modern, frameless, Spotify-styled overlay.
 
 ---
 
-## Screenshots
+## 🌟 Highlights & Features
 
-> Add screenshots of the overlay and settings dialog here.
+- 🎤 **Synchronized LRC Lyrics** — O(log n) real-time timestamp matching with Spotify-style smooth vertical scrolling.
+- 🎵 **Multi-Source Playback Detection**:
+  - **Windows**: Native System Media Transport Controls (WinRT GSMTC) + Window Title fallback.
+  - **Linux**: MPRIS protocol over D-Bus (`dbus-python`, Gio, `playerctl`).
+- 🎨 **Modern Customizable Overlay**:
+  - Spotify Dark, Cinematic Cyan, Neon Pink, High Contrast presets.
+  - Custom font family, font size, bold toggles, alignment (Left/Center/Right).
+  - Background color & opacity, drop shadow, text contour outline.
+  - Per-pixel adaptive contrast color inversion over light/dark backgrounds.
+- ⚙️ **Rich Behavior Controls**:
+  - **Click-Through Mode**: Clicks pass through the overlay to games/desktop.
+  - **Auto-Hide on Pause**: Smoothly hides when media stops/pauses.
+  - **Screen Capture Exclusion**: Hides overlay from OBS / Discord screen sharing (`SetWindowDisplayAffinity`).
+  - **Auto-Resize Height**: Dynamically adapts window height to visible context lines.
+  - **Track-Specific Timing Nudges**: Adjust lyric offset live with `Ctrl+Left` / `Ctrl+Right`.
+- 🔍 **Manual Lyric Search & Correction**: Interactive dialog to query LRCLIB and bind custom lyrics to any track.
+- 💾 **Disk & Memory Caching**: Offline persistence for fetched lyrics in `.lyrics_cache/`.
 
 ---
 
-## Requirements
+## 📦 Easy Installation (Zero Setup Needed)
 
-| Platform | Requirements |
-|----------|--------------|
-| **All** | Python 3.10+, Spotify (desktop or web) |
-| **Windows** | Windows 10/11 recommended; optional [`pywin32`](https://pypi.org/project/pywin32/) for window-title fallback |
-| **Linux** | Spotify with MPRIS support; `dbus-python`, `python3-gi`, or `playerctl` |
+### 🪟 For Windows Users (1-Click Executable)
+
+1. Download **`LyricScript-Windows-x64.zip`** from the latest [GitHub Release](https://github.com/StretchWave/LyricScript/releases).
+2. Extract the `.zip` folder.
+3. Double-click **`LyricScript.exe`** — **No Python or command-line required!**
 
 ---
 
-## Installation
+### 🐧 For Linux Users (One-Line Installer)
 
-### 1. Clone the repository
+Open your terminal and run this single command:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/LyricScript.git
+curl -sSL https://raw.githubusercontent.com/StretchWave/LyricScript/main/install.sh | bash
+```
+
+Launch LyricScript anytime by typing:
+```bash
+lyricscript
+```
+
+---
+
+### 🐍 For Python Developers (`pip`)
+
+```bash
+pip install lyricscript
+```
+
+Or run directly from source:
+```bash
+git clone https://github.com/StretchWave/LyricScript.git
 cd LyricScript
-```
-
-### 2. Create a virtual environment (recommended)
-
-```bash
-python -m venv venv
-
-# Windows
-venv\Scripts\activate
-
-# Linux / macOS
-source venv/bin/activate
-```
-
-### 3. Install dependencies
-
-```bash
 pip install -r requirements.txt
-```
-
-**Windows (optional, for fallback media detection):**
-
-```bash
-pip install pywin32
-```
-
-**Linux (if not using `playerctl`):**
-
-```bash
-# Debian / Ubuntu
-sudo apt install python3-dbus python3-gi
-
-# Or install playerctl as a fallback
-sudo apt install playerctl
-```
-
-### 4. Run LyricScript
-
-```bash
 python main.py
 ```
 
-The app starts in the **system tray**. Right-click the music-note icon near the clock to open settings, toggle the overlay, or exit.
+3. **Install Requirements:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Launch Application:**
+   ```bash
+   python main.py
+   ```
 
 ---
 
-## Usage
+### Option 3: Building a Standalone `.exe` for Windows (No Python Needed)
 
-1. **Start Spotify** — Play any track in the desktop app or a web browser.
-2. **LyricScript auto-detects** the active session and fetches synced lyrics.
-3. **Drag** the overlay to reposition it; **resize** from the bottom-right corner.
-4. **Right-click** the overlay or tray icon for quick actions.
+You can freeze LyricScript into a portable single-file executable using **PyInstaller**:
 
-### System tray menu
+1. **Install PyInstaller:**
+   ```bash
+   pip install pyinstaller
+   ```
 
-| Action | Description |
-|--------|-------------|
-| **Settings** | Open the customization dialog |
-| **Target Media Source** | Pick a specific app/session (e.g. Brave vs Spotify Desktop) |
-| **Hide / Show Lyrics Overlay** | Toggle widget visibility |
-| **Always on Top** | Keep the overlay above other windows |
-| **Lock Position** | Disable drag-to-move |
-| **Exit** | Quit the application |
+2. **Build Portable Executable:**
+   ```bash
+   pyinstaller --noconfirm --onedir --windowed --name "LyricScript" main.py
+   ```
 
-### Keyboard shortcuts
+3. Find your ready-to-run package in `dist/LyricScript/LyricScript.exe`!
+
+---
+
+## 🚀 Usage Guide
+
+1. **Launch LyricScript** — The app starts minimized in your **System Tray** (bottom right near clock).
+2. **Play Music** — Start playing any track on Spotify Desktop or supported web browser.
+3. **Control & Customize**:
+   - Right-click the **System Tray Icon** or overlay to open **Settings**.
+   - Drag to reposition (when unlocked); resize using bottom-right corner grip.
+
+### ⌨️ Default Hotkeys
 
 | Shortcut | Action |
-|----------|--------|
-| `Ctrl+Shift+L` | Toggle overlay visibility |
-| `Ctrl+Left` | Nudge sync timing **−250 ms** (lyrics appear earlier) |
-| `Ctrl+Right` | Nudge sync timing **+250 ms** (lyrics appear later) |
+|---|---|
+| `Ctrl+H` | Toggle Overlay Visibility |
+| `Ctrl+R` / `F5` | Force Refresh / Reload Lyrics for current song |
+| `Ctrl+Left` | Nudge timing **−250ms** (lyrics appear earlier) |
+| `Ctrl+Right` | Nudge timing **+250ms** (lyrics appear later) |
 
 ---
 
-## Settings
+## 🛠️ Project Structure
 
-Open **Settings** from the tray to customize:
-
-- **Typography** — Font family, size, bold, alignment, song info sub-label
-- **Appearance** — Text/background/shadow colors, opacity, blur
-- **Behavior & Source** — Media source, always-on-top, lock position, multi-line context, sync offset
-- **Theme presets** — Default Clean, Cinematic Dark, Neon Glow, High Contrast
-- **Live Logs** — Real-time diagnostic output
-
-Settings are saved to `settings.json` in the project directory.
-
----
-
-## Project structure
-
-```
+```text
 LyricScript/
-├── main.py              # Application entry point
-├── lyrics_widget.py     # Main overlay UI, tray icon, lyric display loop
-├── spotify_player.py    # Playback detection (WinRT / MPRIS / playerctl)
-├── lrclib_client.py     # LRCLIB API client with disk caching
-├── lrc_parser.py        # LRC format parser (bisect-based lookup)
-├── settings_manager.py  # Persistent settings (JSON)
-├── settings_dialog.py   # Settings UI with live preview
-├── logger.py            # Thread-safe logging with live log viewer
-├── settings.json        # User settings (created on first run)
-├── requirements.txt     # Python dependencies
-└── .lyrics_cache/       # Cached lyrics (auto-created)
+├── lyricscript/               # Core application package
+│   ├── __init__.py            # Package metadata & version
+│   ├── __main__.py            # Module CLI entry point (python -m lyricscript)
+│   ├── main.py                # Main Qt Application setup & System Tray initialization
+│   ├── lyrics_widget.py       # Floating transparent overlay window & mouse event handlers
+│   ├── settings_dialog.py     # Frameless settings dialog with live preview & logs drawer
+│   ├── settings_manager.py    # Atomic persistent JSON config manager & debounced save
+│   ├── animation_engine.py    # Spotify-style custom QPainter smooth scrolling engine
+│   ├── lrclib_client.py       # LRCLIB API client, search fallback & disk cache manager
+│   ├── spotify_player.py      # Cross-platform media playback detector (WinRT / MPRIS)
+│   ├── lrc_parser.py          # Fast bisect-based LRC timestamp parser
+│   ├── logger.py              # Thread-safe RLock logger & live diagnostic listener
+│   └── ui_theme.py            # Dark Slate palette, qtawesome vector icons & custom widgets
+├── main.py                    # Root entry point launcher
+├── pyproject.toml             # Standard PEP 517 build & packaging definition
+├── requirements.txt           # Python dependencies list
+└── README.md                  # Project documentation
 ```
 
 ---
 
-## How it works
+## 🤝 Contributing
 
-```mermaid
-flowchart LR
-    A[Spotify] --> B[Media Detection]
-    B --> C{Platform}
-    C -->|Windows| D[WinRT GSMTC]
-    C -->|Linux| E[MPRIS / playerctl]
-    D --> F[Playback Info]
-    E --> F
-    F --> G[LRCLIB API]
-    G --> H[LRC Parser]
-    H --> I[Lyrics Overlay]
-```
-
-1. A background worker polls the active media session (~12.5 Hz on Windows).
-2. On track change, lyrics are fetched asynchronously from LRCLIB (exact match → fuzzy search → cleaned-title fallback).
-3. The overlay updates every 50 ms, matching the current playback position to LRC timestamps.
+Contributions, bug reports, and feature requests are welcome!
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
 ---
 
-## Troubleshooting
+## 📜 License
 
-### "Waiting for Spotify..."
-
-- Make sure Spotify is playing (not just open).
-- On **Windows**, try selecting the correct **Target Media Source** in Settings or the tray menu.
-- If using Spotify Desktop and metadata is missing, enable **Show desktop overlay** in Spotify → Settings → Display.
-
-### Lyrics are out of sync
-
-- Use `Ctrl+Left` / `Ctrl+Right` to nudge timing, or adjust **Sync Offset** in Settings.
-- Web players may report less accurate playback position than the desktop app.
-
-### No synced lyrics found
-
-- Not every song is in LRCLIB. Plain (unsynced) lyrics may be shown as a fallback.
-- Check the **Live Logs** tab in Settings for lookup details.
-
-### Window-title fallback not working (Windows)
-
-Install the optional dependency:
-
-```bash
-pip install pywin32
-```
-
----
-
-## Lyrics data
-
-Lyrics are provided by the community-driven [LRCLIB](https://lrclib.net) API. LyricScript caches responses locally in `.lyrics_cache/` to reduce network requests.
-
----
-
-## License
-
-No license file is included yet. Add one before publishing if you plan to open-source this project.
-
----
-
-## Acknowledgments
-
-- [LRCLIB](https://lrclib.net) — Synced lyrics API
-- [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) — Desktop UI framework
+Distributed under the MIT License. See `LICENSE` for details.

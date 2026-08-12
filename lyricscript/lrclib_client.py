@@ -7,7 +7,7 @@ import requests
 from typing import Optional, Dict, Tuple, List
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from logger import log_event
+from lyricscript.logger import log_event
 
 # Disk cache directory — next to the script
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

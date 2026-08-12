@@ -13,14 +13,14 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView
 )
 
-from ui_theme import (
+from lyricscript.ui_theme import (
     PALETTE, DARK_THEME_STYLESHEET, get_icon, create_swatch_icon,
     ToggleSwitch, ValueSlider, ColorSwatchButton, KeycapWidget
 )
-from settings_manager import SettingsManager, PRESETS
-from logger import AppLogger, log_event
-from animation_engine import LyricsRenderer
-from lrclib_client import LRCLibClient
+from lyricscript.settings_manager import SettingsManager, PRESETS
+from lyricscript.logger import AppLogger, log_event
+from lyricscript.animation_engine import LyricsRenderer
+from lyricscript.lrclib_client import LRCLibClient
 
 
 class CustomTitleBar(QWidget):

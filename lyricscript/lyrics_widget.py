@@ -13,14 +13,14 @@ from PyQt6.QtGui import (
     QPen, QBrush, QShortcut, QKeySequence
 )
 
-from spotify_player import SpotifyPlayer
-from lrclib_client import LRCLibClient, LyricsFetchWorker
-from lrc_parser import LRCParser
-from settings_manager import SettingsManager
-from settings_dialog import SettingsDialog
-from logger import log_event
-from animation_engine import LyricsRenderer
-from ui_theme import PALETTE, ICONS, get_icon, MENU_STYLESHEET
+from lyricscript.spotify_player import SpotifyPlayer
+from lyricscript.lrclib_client import LRCLibClient, LyricsFetchWorker
+from lyricscript.lrc_parser import LRCParser
+from lyricscript.settings_manager import SettingsManager
+from lyricscript.settings_dialog import SettingsDialog
+from lyricscript.logger import log_event
+from lyricscript.animation_engine import LyricsRenderer
+from lyricscript.ui_theme import PALETTE, ICONS, get_icon, MENU_STYLESHEET
 
 
 def create_system_tray_icon() -> QIcon:
