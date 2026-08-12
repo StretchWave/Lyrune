@@ -13,14 +13,14 @@ from PyQt6.QtGui import (
     QPen, QBrush, QShortcut, QKeySequence
 )
 
-from lyricscript.spotify_player import SpotifyPlayer
-from lyricscript.lrclib_client import LRCLibClient, LyricsFetchWorker
-from lyricscript.lrc_parser import LRCParser
-from lyricscript.settings_manager import SettingsManager
-from lyricscript.settings_dialog import SettingsDialog
-from lyricscript.logger import log_event
-from lyricscript.animation_engine import LyricsRenderer
-from lyricscript.ui_theme import PALETTE, ICONS, get_icon, MENU_STYLESHEET
+from lyrune.spotify_player import SpotifyPlayer
+from lyrune.lrclib_client import LRCLibClient, LyricsFetchWorker
+from lyrune.lrc_parser import LRCParser
+from lyrune.settings_manager import SettingsManager
+from lyrune.settings_dialog import SettingsDialog
+from lyrune.logger import log_event
+from lyrune.animation_engine import LyricsRenderer
+from lyrune.ui_theme import PALETTE, ICONS, get_icon, MENU_STYLESHEET
 
 
 def create_system_tray_icon() -> QIcon:
@@ -233,7 +233,7 @@ class LyricsWidget(QWidget):
     def _init_system_tray(self):
         """Initializes the Windows System Tray Icon & Context Menu."""
         self.tray_icon = QSystemTrayIcon(create_system_tray_icon(), self)
-        self.tray_icon.setToolTip("LyricScript Desktop Widget")
+        self.tray_icon.setToolTip("Lyrune Desktop Widget")
 
         # System Tray Menu
         self.tray_menu = QMenu(self)
@@ -608,9 +608,15 @@ class LyricsWidget(QWidget):
             self.action_visible.setIcon(get_icon("eye_off"))
 
     def _open_settings(self):
-        if self.settings_dialog is None or not self.settings_dialog.isVisible():
-            self.settings_dialog = SettingsDialog(self.settings_mgr, self)
+        if self.settings_dialog is None:
+            self.settings_dialog = SettingsDialog(self.settings_mgr, parent=None)
             self.settings_dialog.settings_changed.connect(self._apply_settings)
+            self.settings_dialog.show()
+            self.settings_dialog.raise_()
+            self.settings_dialog.activateWindow()
+        else:
+            if self.settings_dialog.isMinimized():
+                self.settings_dialog.setWindowState(Qt.WindowState.WindowNoState)
             self.settings_dialog.show()
             self.settings_dialog.raise_()
             self.settings_dialog.activateWindow()

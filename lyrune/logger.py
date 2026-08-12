@@ -7,7 +7,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 class AppLogger(QObject):
     """
-    Thread-safe singleton logger for LyricScript.
+    Thread-safe singleton logger for Lyrune.
 
     Features:
       - Thread-safe singleton via threading.Lock (fixes TOCTOU race).

@@ -7,7 +7,7 @@ import requests
 from typing import Optional, Dict, Tuple, List
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from lyricscript.logger import log_event
+from lyrune.logger import log_event
 
 # Disk cache directory — next to the script
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +58,7 @@ class LRCLibClient:
     API_GET_URL = "https://lrclib.net/api/get"
     API_SEARCH_URL = "https://lrclib.net/api/search"
     FAILURE_TTL = 60.0  # seconds before retrying a failed network lookup
-    HEADERS = {"User-Agent": "LyricScript-DesktopWidget/2.0"}
+    HEADERS = {"User-Agent": "Lyrune-DesktopWidget/2.0"}
 
     def __init__(self):
         self._mem_cache: Dict[Tuple[str, str], Tuple[Optional[str], Optional[str]]] = {}

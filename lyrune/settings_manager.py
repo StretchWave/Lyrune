@@ -110,14 +110,14 @@ def _get_app_config_dir() -> str:
         base = os.environ.get('APPDATA', os.path.expanduser('~'))
     else:
         base = os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))
-    config_dir = os.path.join(base, 'LyricScript')
+    config_dir = os.path.join(base, 'Lyrune')
     os.makedirs(config_dir, exist_ok=True)
     return config_dir
 
 
 class SettingsManager:
     """
-    Manages persistent configuration settings for LyricScript.
+    Manages persistent configuration settings for Lyrune.
 
     Improvements over original:
       - Saves settings to user APPDATA/XDG_CONFIG directory (prevents PyInstaller temp dir losses).
@@ -162,11 +162,11 @@ class SettingsManager:
                     for k in orphaned:
                         del self.settings[k]
                     if orphaned:
-                        from lyricscript.logger import log_event
+                        from lyrune.logger import log_event
                         log_event(f"[SettingsManager] Migrated out {len(orphaned)} orphaned key(s): {orphaned}")
                         self._write_to_disk()
             except Exception as e:
-                from lyricscript.logger import log_event
+                from lyrune.logger import log_event
                 log_event(f"⚠️ [SettingsManager Warning] Corrupted settings file, falling back to defaults: {e}")
                 self.settings = dict(DEFAULT_SETTINGS)
         else:
@@ -186,7 +186,7 @@ class SettingsManager:
                     os.remove(tmp_path)
                 except Exception:
                     pass
-            from lyricscript.logger import log_event
+            from lyrune.logger import log_event
             log_event(f"❌ [SettingsManager Exception] Failed to write settings to disk: {e}")
         self._dirty = False
 

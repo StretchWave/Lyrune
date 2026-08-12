@@ -8,7 +8,7 @@ import threading
 from typing import Dict, Any, Optional, Tuple, List
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from lyricscript.logger import log_event, log_once
+from lyrune.logger import log_event, log_once
 
 # Global WinRT imports for Windows
 HAS_WINRT = False

@@ -13,14 +13,14 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView
 )
 
-from ui_theme import (
+from lyrune.ui_theme import (
     PALETTE, DARK_THEME_STYLESHEET, get_icon, create_swatch_icon,
     ToggleSwitch, ValueSlider, ColorSwatchButton, KeycapWidget
 )
-from settings_manager import SettingsManager, PRESETS
-from logger import AppLogger, log_event
-from animation_engine import LyricsRenderer
-from lrclib_client import LRCLibClient
+from lyrune.settings_manager import SettingsManager, PRESETS
+from lyrune.logger import AppLogger, log_event
+from lyrune.animation_engine import LyricsRenderer
+from lyrune.lrclib_client import LRCLibClient
 
 
 class CustomTitleBar(QWidget):
@@ -48,7 +48,7 @@ class CustomTitleBar(QWidget):
         icon_label.setPixmap(get_icon("music", color=PALETTE.accent).pixmap(18, 18))
         left_layout.addWidget(icon_label)
 
-        title_label = QLabel("LyricScript", self)
+        title_label = QLabel("Lyrune", self)
         title_label.setStyleSheet(f"font-weight: 700; font-size: 11pt; color: {PALETTE.text_primary};")
         left_layout.addWidget(title_label)
 
@@ -225,7 +225,11 @@ class SettingsDialog(QDialog):
         self._log_connected = False
 
         self.setObjectName("settingsRoot")
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowMinimizeButtonHint
+        )
         self.resize(780, 680)
         self.setMinimumSize(680, 560)
         self.setStyleSheet(DARK_THEME_STYLESHEET)
@@ -251,7 +255,7 @@ class SettingsDialog(QDialog):
 
         # 1. Custom Title Bar
         self.title_bar = CustomTitleBar(self)
-        self.title_bar.minimizeClicked.connect(self.showMinimized)
+        self.title_bar.minimizeClicked.connect(self._minimize_to_taskbar)
         self.title_bar.closeClicked.connect(self.reject)
         root_layout.addWidget(self.title_bar)
 
@@ -976,7 +980,7 @@ class SettingsDialog(QDialog):
         cached_count = len(os.listdir(cache_dir)) if os.path.exists(cache_dir) else 0
         diag = [
             "==================================================",
-            " LyricScript System Diagnostic Report",
+            " Lyrune System Diagnostic Report",
             "==================================================",
             f"OS Platform: {platform.system()} {platform.release()} ({platform.version()})",
             f"Python Version: {sys.version.split()[0]}",
@@ -1003,6 +1007,29 @@ class SettingsDialog(QDialog):
             try:
                 AppLogger.instance().log_signal.disconnect(self._append_log_entry)
                 self._log_connected = False
+            except Exception:
+                pass
+
+    def _minimize_to_taskbar(self):
+        """Minimizes the frameless settings window cleanly to the OS Taskbar."""
+        self.setWindowState(Qt.WindowState.WindowMinimized)
+
+    def showEvent(self, event):
+        """Ensure native Windows style flags WS_MINIMIZEBOX, WS_SYSMENU & WS_EX_APPWINDOW are set on HWND for taskbar minimization."""
+        super().showEvent(event)
+        if sys.platform == "win32" and self.winId():
+            try:
+                import ctypes
+                hwnd = int(self.winId())
+                GWL_STYLE = -16
+                GWL_EXSTYLE = -20
+                WS_MINIMIZEBOX = 0x00020000
+                WS_SYSMENU = 0x00080000
+                WS_EX_APPWINDOW = 0x00040000
+                style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+                ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style | WS_MINIMIZEBOX | WS_SYSMENU)
+                exstyle = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, exstyle | WS_EX_APPWINDOW)
             except Exception:
                 pass
 
