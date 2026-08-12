@@ -149,20 +149,40 @@ class LyricsWidget(QWidget):
         self.size_grip.setStyleSheet("background: transparent;")
         self.outer_layout.addWidget(self.size_grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
 
-        # Keyboard shortcut: Ctrl+Shift+L to toggle visibility.
-        # ApplicationShortcut context so it keeps working while the overlay is
-        # hidden (a WindowShortcut dies with its hidden parent window, so the
-        # documented hide/re-show cycle would otherwise be one-way).
-        self._shortcut = QShortcut(QKeySequence("Ctrl+Shift+L"), self)
-        self._shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self._shortcut.activated.connect(self._toggle_widget_visibility)
+        # Configurable Keyboard Shortcuts
+        self._shortcut_toggle = QShortcut(self)
+        self._shortcut_toggle.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._shortcut_toggle.activated.connect(self._toggle_widget_visibility)
 
-        # Keyboard shortcuts: Ctrl+Left (-250ms sync nudge) / Ctrl+Right (+250ms sync nudge)
-        self._sc_nudge_minus = QShortcut(QKeySequence("Ctrl+Left"), self)
+        self._sc_nudge_minus = QShortcut(self)
         self._sc_nudge_minus.activated.connect(lambda: self._nudge_sync_offset(-250))
 
-        self._sc_nudge_plus = QShortcut(QKeySequence("Ctrl+Right"), self)
+        self._sc_nudge_plus = QShortcut(self)
         self._sc_nudge_plus.activated.connect(lambda: self._nudge_sync_offset(250))
+
+        self._sc_refresh = QShortcut(self)
+        self._sc_refresh.activated.connect(self._refresh_current_lyrics)
+
+        self._sc_f5 = QShortcut(QKeySequence("F5"), self)
+        self._sc_f5.activated.connect(self._refresh_current_lyrics)
+
+        self._update_shortcuts_from_settings(self.settings_mgr.settings)
+
+    def _update_shortcuts_from_settings(self, s: dict):
+        """Updates QShortcut key sequences dynamically from settings dictionary."""
+        key_toggle = s.get("shortcut_toggle_overlay", "Ctrl+H")
+        key_refresh = s.get("shortcut_refresh", "Ctrl+R")
+        key_minus = s.get("shortcut_nudge_minus", "Ctrl+Left")
+        key_plus = s.get("shortcut_nudge_plus", "Ctrl+Right")
+
+        if key_toggle:
+            self._shortcut_toggle.setKey(QKeySequence(key_toggle))
+        if key_refresh:
+            self._sc_refresh.setKey(QKeySequence(key_refresh))
+        if key_minus:
+            self._sc_nudge_minus.setKey(QKeySequence(key_minus))
+        if key_plus:
+            self._sc_nudge_plus.setKey(QKeySequence(key_plus))
 
     def _nudge_sync_offset(self, delta_ms: int):
         """Nudges the lyric sync timing offset live by delta_ms."""
@@ -170,6 +190,20 @@ class LyricsWidget(QWidget):
         new_val = max(-5000, min(5000, current + delta_ms))
         self.settings_mgr.set("sync_offset_ms", new_val)
         log_event(f"⏱️ [Sync Nudge] Timing offset adjusted to {new_val}ms (delta: {delta_ms:+d}ms)", force=True)
+
+    def _refresh_current_lyrics(self):
+        """Forces a fresh online reload of lyrics for the current song, purging caches."""
+        if not self.current_song_artist or not self.current_song_title:
+            log_event("🔄 [Refresh Lyrics] No song currently playing to refresh.", force=True)
+            return
+
+        artist = self.current_song_artist
+        title = self.current_song_title
+        log_event(f"🔄 [Refresh Lyrics] Forcing fresh reload for '{artist} - {title}'...", force=True)
+
+        self.lrclib.clear_track_cache(artist, title)
+        self.current_track_id = None
+        self._on_song_changed(artist, title)
 
     def _restore_window_position(self):
         """Restores saved window position, or centers on screen if off-screen/first launch."""
@@ -194,6 +228,10 @@ class LyricsWidget(QWidget):
 
         # System Tray Menu
         self.tray_menu = QMenu()
+
+        self.action_refresh = QAction("🔄 Refresh Lyrics", self)
+        self.action_refresh.triggered.connect(self._refresh_current_lyrics)
+        self.tray_menu.addAction(self.action_refresh)
 
         self.action_settings = QAction("⚙️ Settings...", self)
         self.action_settings.triggered.connect(self._open_settings)
@@ -260,35 +298,6 @@ class LyricsWidget(QWidget):
     def _set_target_source_from_tray(self, source_id: str):
         self.settings_mgr.set("selected_media_source", source_id)
         self.player.set_target_source(source_id)
-
-    def _quit_application(self):
-        """Safely stops worker thread, animations, and exits application."""
-        # Save window position immediately before exit
-        pos = self.pos()
-        self.settings_mgr.settings["window_x"] = pos.x()
-        self.settings_mgr.settings["window_y"] = pos.y()
-        self.settings_mgr.save_immediate()
-
-        # Stop animation engine
-        if hasattr(self, 'anim_engine'):
-            self.anim_engine.stop_all()
-
-        if hasattr(self, 'player'):
-            self.player.stop_worker_thread()
-        self._stop_lyrics_workers()
-        QApplication.instance().quit()
-
-    def _stop_lyrics_workers(self):
-        """Bounded wait for in-flight lyrics fetches so their QThreads are not
-        destroyed while still running when the app exits."""
-        workers = []
-        if getattr(self, '_lyrics_worker', None) and self._lyrics_worker.isRunning():
-            workers.append(self._lyrics_worker)
-        for w in getattr(self, '_retired_workers', []):
-            if w.isRunning():
-                workers.append(w)
-        for w in workers:
-            w.wait(3000)
 
     def _on_ideal_height_changed(self, ideal_height: int):
         """Adapt container window height to fit visible lyrics context lines."""
@@ -385,6 +394,9 @@ class LyricsWidget(QWidget):
         if hasattr(self, 'renderer'):
             self.renderer.update_style(s)
 
+        # Update shortcuts dynamically
+        self._update_shortcuts_from_settings(s)
+
     def _update_widget_border(self, bg_rgba: Optional[str] = None, border: bool = False):
         """Sets widget background with optional border."""
         if bg_rgba is None:
@@ -414,6 +426,8 @@ class LyricsWidget(QWidget):
                 self.current_track_id = None
                 self.current_song_title = ""
                 self.current_song_artist = ""
+                self.parser.parse("")
+                self._unsynced_lyrics = ""
                 self.sub_label.setVisible(False)
             return
 

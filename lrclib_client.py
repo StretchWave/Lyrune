@@ -32,9 +32,13 @@ class LyricsFetchWorker(QThread):
         self._title = title
 
     def run(self):
-        self.fetch_started.emit(self._artist, self._title)
-        synced, unsynced = self._client.fetch_lyrics(self._artist, self._title)
-        self.lyrics_ready.emit(self._artist, self._title, synced or "", unsynced or "")
+        try:
+            self.fetch_started.emit(self._artist, self._title)
+            synced, unsynced = self._client.fetch_lyrics(self._artist, self._title)
+            self.lyrics_ready.emit(self._artist, self._title, synced or "", unsynced or "")
+        except Exception as e:
+            log_event(f"❌ [LyricsWorker Exception] Error fetching lyrics: {e}")
+            self.lyrics_ready.emit(self._artist, self._title, "", "")
 
 
 class LRCLibClient:
@@ -198,7 +202,7 @@ class LRCLibClient:
                 self.API_GET_URL,
                 params={"artist_name": artist.strip(), "track_name": title.strip()},
                 headers=self.HEADERS,
-                timeout=5
+                timeout=3.5
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -218,7 +222,7 @@ class LRCLibClient:
                 self.API_SEARCH_URL,
                 params={"q": f"{artist} {title}"},
                 headers=self.HEADERS,
-                timeout=5
+                timeout=3.5
             )
             if resp.status_code == 200:
                 results = resp.json()
@@ -242,11 +246,25 @@ class LRCLibClient:
             log_event(f"[LRCLib /api/search Exception] {e}")
         return (None, None)
 
+    def clear_track_cache(self, artist: str, title: str) -> None:
+        """Purges memory and disk cache for a specific track to force a fresh online reload."""
+        key = self._cache_key(artist, title)
+        if key in self._mem_cache:
+            del self._mem_cache[key]
+        if key in self._failure_cache:
+            del self._failure_cache[key]
+        disk_path = self._disk_cache_path(artist, title)
+        if os.path.exists(disk_path):
+            try:
+                os.remove(disk_path)
+            except Exception:
+                pass
+        log_event(f"[LRCLib Cache] Cleared cache for track: '{artist} - {title}'")
+
     def clear_cache(self) -> None:
         """Clears both in-memory and disk caches."""
         self._mem_cache.clear()
         self._failure_cache.clear()
-        # Clear disk cache files
         try:
             for f in os.listdir(_CACHE_DIR):
                 fp = os.path.join(_CACHE_DIR, f)

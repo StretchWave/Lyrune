@@ -30,6 +30,15 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "context_lines": 2,          # Unified context lines before & after current lyric line (0 to 5)
     "auto_resize_height": True,   # Automatically adapt overlay height to current lyrics content
     "animation_speed_ms": 400,    # Duration of smooth Spotify-style scroll animation (100 to 800ms)
+    "adaptive_color": False,      # Smart per-pixel contrast inversion over light/dark backgrounds
+    "active_text_outline": True,  # High-contrast text contour outline on currently playing line
+    "active_line_opacity": 100,   # Opacity percentage of currently playing lyric line (10-100%)
+    "context_line_opacity": 45,   # Opacity percentage of context lyric lines (0-100%)
+    "link_opacity_levels": True,  # Master link: scale active & context line opacities together proportionally
+    "shortcut_toggle_overlay": "Ctrl+H",  # Hotkey to show/hide lyrics overlay
+    "shortcut_refresh": "Ctrl+R",          # Hotkey to refresh/reload lyrics
+    "shortcut_nudge_minus": "Ctrl+Left",   # Hotkey to nudge timing earlier (-250ms)
+    "shortcut_nudge_plus": "Ctrl+Right",   # Hotkey to nudge timing later (+250ms)
 }
 
 PRESETS: Dict[str, Dict[str, Any]] = {

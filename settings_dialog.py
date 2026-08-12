@@ -4,107 +4,128 @@ from PyQt6.QtWidgets import (
     QDialog, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QFontComboBox, QSpinBox, QCheckBox, QComboBox, QPushButton,
     QSlider, QColorDialog, QGroupBox, QGraphicsDropShadowEffect, QTextEdit,
-    QApplication
+    QApplication, QScrollArea, QFrame, QKeySequenceEdit
 )
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QKeySequence
 
 from settings_manager import PRESETS, DEFAULT_SETTINGS
 from logger import AppLogger
 
 DARK_THEME_STYLESHEET = """
 QDialog {
-    background-color: #1E1E24;
-    color: #F0F0F0;
-    font-family: 'Segoe UI', sans-serif;
+    background-color: #0F172A;
+    color: #F8FAFC;
+    font-family: 'Segoe UI', system-ui, sans-serif;
 }
 QTabWidget::pane {
-    border: 1px solid #2D2D36;
-    background: #25252D;
-    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #1E293B;
+    border-radius: 10px;
 }
 QTabBar::tab {
-    background: #18181C;
-    color: #A0A0AA;
-    padding: 8px 16px;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
-    margin-right: 2px;
+    background: #0F172A;
+    color: #94A3B8;
+    padding: 8px 14px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    margin-right: 4px;
+    font-size: 12px;
+    font-weight: 500;
 }
 QTabBar::tab:selected {
-    background: #25252D;
-    color: #00F3FF;
+    background: #1E293B;
+    color: #06B6D4;
     font-weight: bold;
+    border-bottom: 2px solid #06B6D4;
 }
 QLabel {
-    color: #E0E0E6;
+    color: #E2E8F0;
     font-size: 13px;
 }
 QGroupBox {
-    border: 1px solid #3A3A46;
-    border-radius: 6px;
-    margin-top: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(30, 41, 59, 0.5);
+    border-radius: 8px;
+    margin-top: 12px;
     font-weight: bold;
-    color: #00F3FF;
+    color: #06B6D4;
+    font-size: 13px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
-    left: 10px;
-    padding: 0 5px;
+    left: 12px;
+    padding: 0 6px;
 }
 QPushButton {
-    background-color: #2E2E38;
-    color: #FFFFFF;
-    border: 1px solid #444454;
+    background-color: #334155;
+    color: #F8FAFC;
+    border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 6px;
-    padding: 6px 14px;
+    padding: 6px 12px;
     font-size: 12px;
+    font-weight: 500;
 }
 QPushButton:hover {
-    background-color: #3E3E4C;
-    border-color: #00F3FF;
+    background-color: #475569;
+    border-color: #06B6D4;
 }
 QPushButton#btn_primary {
-    background-color: #007ACC;
-    border-color: #0098FF;
+    background-color: #2563EB;
+    border-color: #3B82F6;
     font-weight: bold;
 }
 QPushButton#btn_primary:hover {
-    background-color: #0098FF;
+    background-color: #3B82F6;
 }
 QSpinBox, QComboBox, QFontComboBox {
-    background-color: #2A2A34;
-    color: #FFFFFF;
-    border: 1px solid #444454;
-    border-radius: 4px;
-    padding: 6px 10px;
-    min-height: 24px;
+    background-color: #1E293B;
+    color: #F8FAFC;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    padding: 5px 8px;
+    min-height: 22px;
 }
 QComboBox QAbstractItemView {
-    background-color: #1E1E24;
-    color: #FFFFFF;
-    selection-background-color: #007ACC;
+    background-color: #0F172A;
+    color: #F8FAFC;
+    selection-background-color: #2563EB;
     selection-color: #FFFFFF;
-    border: 1px solid #00F3FF;
-    border-radius: 4px;
+    border: 1px solid #06B6D4;
+    border-radius: 6px;
     padding: 4px;
 }
-QComboBox::drop-down {
-    subcontrol-origin: padding;
-    subcontrol-position: top right;
-    width: 20px;
-    border-left-width: 0px;
+QSlider::groove:horizontal {
+    height: 6px;
+    background: #334155;
+    border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    background: #06B6D4;
+    border: 2px solid #F8FAFC;
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+}
+QSlider::handle:horizontal:hover {
+    background: #38BDF8;
 }
 QCheckBox {
-    color: #E0E0E6;
+    color: #E2E8F0;
     font-size: 13px;
+    spacing: 8px;
 }
 QTextEdit {
-    background-color: #121216;
-    color: #00FF66;
+    background-color: #020617;
+    color: #38BDF8;
     font-family: 'Consolas', 'Courier New', monospace;
     font-size: 11px;
-    border: 1px solid #333344;
-    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+}
+QScrollArea {
+    background: transparent;
+    border: none;
 }
 """
 
@@ -114,8 +135,11 @@ class SettingsDialog(QDialog):
     Settings Window with Live Preview, Theme Presets, Media Source Selection, and Real-Time Logs.
 
     Improvements:
-      - Properly disconnects logger signal on close/reject (prevents dangling connections).
-      - Media source refresh can delegate to async worker thread.
+      - Fixed shrink/resize issue: scrollable tabs & flexible minimum size (380x420).
+      - Fixed minimize bug: proper top-level taskbar window flags (Window | WindowMinMaxButtonsHint).
+      - Granular Opacity Controls for Active Line and Context Lines with Master Link toggle.
+      - Active Line Text Contour / Outline toggle.
+      - Sleek Slate Dark Glassmorphism UI palette.
     """
     settings_changed = pyqtSignal(dict)
 
@@ -132,7 +156,9 @@ class SettingsDialog(QDialog):
         self._shadow_color = self.working_settings.get("shadow_color", "#000000")
 
         self.setWindowTitle("LyricScript Settings & Customization")
-        self.resize(560, 620)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowMinMaxButtonsHint | Qt.WindowType.WindowCloseButtonHint)
+        self.resize(540, 620)
+        self.setMinimumSize(380, 420)
         self.setStyleSheet(DARK_THEME_STYLESHEET)
 
         self._init_ui()
@@ -182,15 +208,15 @@ class SettingsDialog(QDialog):
 
         # --- Theme Presets Row ---
         presets_layout = QHBoxLayout()
-        presets_label = QLabel("Theme Presets:", self)
-        presets_label.setStyleSheet("font-weight: bold;")
+        presets_label = QLabel("🎨 Theme Presets:", self)
+        presets_label.setStyleSheet("font-weight: bold; color: #06B6D4;")
         presets_layout.addWidget(presets_label)
 
-        for preset_name in PRESETS.keys():
-            btn = QPushButton(preset_name, self)
-            btn.setToolTip(f"Apply {preset_name} style")
-            btn.clicked.connect(lambda _, name=preset_name: self._apply_preset(name))
-            presets_layout.addWidget(btn)
+        self.preset_combo = QComboBox(self)
+        self.preset_combo.addItem("Select Preset...")
+        self.preset_combo.addItems(list(PRESETS.keys()))
+        self.preset_combo.currentTextChanged.connect(self._on_preset_combo_changed)
+        presets_layout.addWidget(self.preset_combo, 1)
 
         main_layout.addLayout(presets_layout)
 
@@ -199,24 +225,28 @@ class SettingsDialog(QDialog):
 
         self.typography_tab = QWidget()
         self._init_typography_tab()
-        self.tabs.addTab(self.typography_tab, " Typography")
+        self.tabs.addTab(self._wrap_in_scroll_area(self.typography_tab), " Typography")
 
         self.appearance_tab = QWidget()
         self._init_appearance_tab()
-        self.tabs.addTab(self.appearance_tab, " Appearance")
+        self.tabs.addTab(self._wrap_in_scroll_area(self.appearance_tab), " Appearance")
 
         self.behavior_tab = QWidget()
         self._init_behavior_tab()
-        self.tabs.addTab(self.behavior_tab, " Behavior & Source")
+        self.tabs.addTab(self._wrap_in_scroll_area(self.behavior_tab), " Behavior & Source")
 
         self.animations_tab = QWidget()
         self._init_animations_tab()
-        self.tabs.addTab(self.animations_tab, "✨ Animations")
+        self.tabs.addTab(self._wrap_in_scroll_area(self.animations_tab), "✨ Animations")
 
-        # 5. Live Logs Tab
+        self.shortcuts_tab = QWidget()
+        self._init_shortcuts_tab()
+        self.tabs.addTab(self._wrap_in_scroll_area(self.shortcuts_tab), "⌨️ Shortcuts")
+
+        # 6. Live Logs Tab
         self.logs_tab = QWidget()
         self._init_logs_tab()
-        self.logs_tab_index = self.tabs.addTab(self.logs_tab, "📋 Live Logs")
+        self.logs_tab_index = self.tabs.addTab(self._wrap_in_scroll_area(self.logs_tab), "📋 Live Logs")
 
         main_layout.addWidget(self.tabs)
 
@@ -245,6 +275,25 @@ class SettingsDialog(QDialog):
         btn_layout.addWidget(self.btn_cancel)
 
         main_layout.addLayout(btn_layout)
+
+    def _wrap_in_scroll_area(self, inner_widget: QWidget) -> QWidget:
+        """Wraps a tab widget inside a borderless QScrollArea to allow shrinking to any size."""
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(inner_widget)
+
+        wrapper = QWidget()
+        w_layout = QVBoxLayout(wrapper)
+        w_layout.setContentsMargins(0, 0, 0, 0)
+        w_layout.addWidget(scroll)
+        return wrapper
+
+    def _on_preset_combo_changed(self, name: str):
+        if getattr(self, '_is_initializing', False) or not name or name == "Select Preset...":
+            return
+        self._apply_preset(name)
+
 
     def _init_typography_tab(self):
         layout = QFormLayout(self.typography_tab)
@@ -286,18 +335,62 @@ class SettingsDialog(QDialog):
         self.btn_bg_color.clicked.connect(self._pick_bg_color)
         layout.addRow("Background Color:", self.btn_bg_color)
 
-        opacity_layout = QHBoxLayout()
+        self.btn_text_color = QPushButton("Choose Color...", self)
+        self.btn_text_color.clicked.connect(self._pick_text_color)
+        layout.addRow("Text Color:", self.btn_text_color)
+
+        self.btn_bg_color = QPushButton("Choose Color...", self)
+        self.btn_bg_color.clicked.connect(self._pick_bg_color)
+        layout.addRow("Background Color:", self.btn_bg_color)
+
+        bg_op_layout = QHBoxLayout()
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal, self)
         self.opacity_slider.setRange(0, 100)
         self.opacity_label = QLabel("0%", self)
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
-        opacity_layout.addWidget(self.opacity_slider)
-        opacity_layout.addWidget(self.opacity_label)
-        layout.addRow("Background Opacity:", opacity_layout)
+        bg_op_layout.addWidget(self.opacity_slider)
+        bg_op_layout.addWidget(self.opacity_label)
+        layout.addRow("Background Opacity:", bg_op_layout)
+
+        # --- Line Opacities Group ---
+        op_group = QGroupBox("Lyric Line Opacity & Contrast", self.appearance_tab)
+        op_layout = QFormLayout(op_group)
+
+        self.link_opacity_check = QCheckBox("🔗 Link Line Opacities (Scale context opacity with active line)", self)
+        self.link_opacity_check.toggled.connect(self._on_control_changed)
+        op_layout.addRow("", self.link_opacity_check)
+
+        active_op_row = QHBoxLayout()
+        self.active_opacity_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.active_opacity_slider.setRange(10, 100)
+        self.active_opacity_label = QLabel("100%", self)
+        self.active_opacity_slider.valueChanged.connect(self._on_active_opacity_changed)
+        active_op_row.addWidget(self.active_opacity_slider)
+        active_op_row.addWidget(self.active_opacity_label)
+        op_layout.addRow("Active Playing Line Opacity:", active_op_row)
+
+        ctx_op_row = QHBoxLayout()
+        self.context_opacity_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.context_opacity_slider.setRange(0, 100)
+        self.context_opacity_label = QLabel("45%", self)
+        self.context_opacity_slider.valueChanged.connect(self._on_context_opacity_changed)
+        ctx_op_row.addWidget(self.context_opacity_slider)
+        ctx_op_row.addWidget(self.context_opacity_label)
+        op_layout.addRow("Context Lines Opacity:", ctx_op_row)
+
+        self.active_outline_check = QCheckBox("🔲 Text Contour / Border on Active Playing Line", self)
+        self.active_outline_check.toggled.connect(self._on_control_changed)
+        op_layout.addRow("", self.active_outline_check)
+
+        layout.addRow(op_group)
 
         self.border_check = QCheckBox("Enable Glass Border (Subtle outline around overlay)", self)
         self.border_check.toggled.connect(self._on_control_changed)
         layout.addRow("", self.border_check)
+
+        self.adaptive_color_check = QCheckBox("✨ Smart Per-Pixel Adaptive Contrast (Invert text over light/dark backgrounds)", self)
+        self.adaptive_color_check.toggled.connect(self._on_control_changed)
+        layout.addRow("", self.adaptive_color_check)
 
         self.shadow_check = QCheckBox("Enable Drop Shadow / Outline", self)
         self.shadow_check.toggled.connect(self._on_control_changed)
@@ -386,6 +479,41 @@ class SettingsDialog(QDialog):
         self.btn_preview_anim.setObjectName("btn_primary")
         self.btn_preview_anim.clicked.connect(self._preview_animation)
         layout.addRow("", self.btn_preview_anim)
+
+    def _init_shortcuts_tab(self):
+        layout = QFormLayout(self.shortcuts_tab)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(14)
+
+        group = QGroupBox("Customizable Global Hotkeys", self.shortcuts_tab)
+        g_layout = QFormLayout(group)
+        g_layout.setSpacing(12)
+
+        self.ks_toggle = QKeySequenceEdit(self)
+        self.ks_toggle.editingFinished.connect(self._on_control_changed)
+        g_layout.addRow("Show / Hide Lyrics Overlay:", self.ks_toggle)
+
+        self.ks_refresh = QKeySequenceEdit(self)
+        self.ks_refresh.editingFinished.connect(self._on_control_changed)
+        g_layout.addRow("Refresh / Reload Lyrics:", self.ks_refresh)
+
+        self.ks_nudge_minus = QKeySequenceEdit(self)
+        self.ks_nudge_minus.editingFinished.connect(self._on_control_changed)
+        g_layout.addRow("Sync Nudge Earlier (-250ms):", self.ks_nudge_minus)
+
+        self.ks_nudge_plus = QKeySequenceEdit(self)
+        self.ks_nudge_plus.editingFinished.connect(self._on_control_changed)
+        g_layout.addRow("Sync Nudge Later (+250ms):", self.ks_nudge_plus)
+
+        layout.addRow(group)
+
+        info_label = QLabel(
+            "💡 Click any key input field above and press your preferred shortcut key combination.\n"
+            "   Pressing Backspace inside an input box clears the shortcut.",
+            self.shortcuts_tab
+        )
+        info_label.setStyleSheet("color: #94A3B8; font-size: 11px; font-style: italic;")
+        layout.addRow(info_label)
 
     def _on_anim_speed_changed(self, val: int):
         self.anim_speed_label.setText(f"{val}ms")
@@ -562,7 +690,19 @@ class SettingsDialog(QDialog):
         self.opacity_slider.setValue(opacity)
         self.opacity_label.setText(f"{opacity}%")
 
+        self.link_opacity_check.setChecked(s.get("link_opacity_levels", True))
+
+        active_op = s.get("active_line_opacity", 100)
+        self.active_opacity_slider.setValue(active_op)
+        self.active_opacity_label.setText(f"{active_op}%")
+
+        ctx_op = s.get("context_line_opacity", 45)
+        self.context_opacity_slider.setValue(ctx_op)
+        self.context_opacity_label.setText(f"{ctx_op}%")
+
+        self.active_outline_check.setChecked(s.get("active_text_outline", True))
         self.border_check.setChecked(s.get("border_enabled", False))
+        self.adaptive_color_check.setChecked(s.get("adaptive_color", False))
         self.shadow_check.setChecked(s.get("shadow_enabled", True))
         self.shadow_blur_spin.setValue(s.get("shadow_blur", 8))
 
@@ -576,6 +716,12 @@ class SettingsDialog(QDialog):
         self.anim_speed_slider.setValue(s.get("animation_speed_ms", 400))
         self.anim_speed_label.setText(f"{s.get('animation_speed_ms', 400)}ms")
 
+        # Shortcut settings
+        self.ks_toggle.setKeySequence(QKeySequence(s.get("shortcut_toggle_overlay", "Ctrl+H")))
+        self.ks_refresh.setKeySequence(QKeySequence(s.get("shortcut_refresh", "Ctrl+R")))
+        self.ks_nudge_minus.setKeySequence(QKeySequence(s.get("shortcut_nudge_minus", "Ctrl+Left")))
+        self.ks_nudge_plus.setKeySequence(QKeySequence(s.get("shortcut_nudge_plus", "Ctrl+Right")))
+
         self._refresh_media_sources()
 
     def _update_color_button(self, button: QPushButton, hex_color: str):
@@ -588,6 +734,21 @@ class SettingsDialog(QDialog):
 
     def _on_opacity_changed(self, val: int):
         self.opacity_label.setText(f"{val}%")
+        self._on_control_changed()
+
+    def _on_active_opacity_changed(self, val: int):
+        self.active_opacity_label.setText(f"{val}%")
+        if getattr(self, 'link_opacity_check', None) and self.link_opacity_check.isChecked():
+            # Master link UX: scale context opacity proportionally with active opacity
+            linked_ctx = max(0, min(100, int(val * 0.45)))
+            self.context_opacity_slider.blockSignals(True)
+            self.context_opacity_slider.setValue(linked_ctx)
+            self.context_opacity_label.setText(f"{linked_ctx}%")
+            self.context_opacity_slider.blockSignals(False)
+        self._on_control_changed()
+
+    def _on_context_opacity_changed(self, val: int):
+        self.context_opacity_label.setText(f"{val}%")
         self._on_control_changed()
 
     def _on_control_changed(self):
@@ -688,7 +849,12 @@ class SettingsDialog(QDialog):
             "text_color": self._text_color,
             "bg_color": self._bg_color,
             "bg_opacity": self.opacity_slider.value(),
+            "link_opacity_levels": self.link_opacity_check.isChecked(),
+            "active_line_opacity": self.active_opacity_slider.value(),
+            "context_line_opacity": self.context_opacity_slider.value(),
+            "active_text_outline": self.active_outline_check.isChecked(),
             "border_enabled": self.border_check.isChecked(),
+            "adaptive_color": self.adaptive_color_check.isChecked(),
             "shadow_enabled": self.shadow_check.isChecked(),
             "shadow_color": self._shadow_color,
             "shadow_blur": self.shadow_blur_spin.value(),
@@ -699,6 +865,10 @@ class SettingsDialog(QDialog):
             "selected_media_source": selected_source_id or "Auto-Detect",
             "sync_offset_ms": self.sync_offset_spin.value(),
             "animation_speed_ms": self.anim_speed_slider.value(),
+            "shortcut_toggle_overlay": self.ks_toggle.keySequence().toString(),
+            "shortcut_refresh": self.ks_refresh.keySequence().toString(),
+            "shortcut_nudge_minus": self.ks_nudge_minus.keySequence().toString(),
+            "shortcut_nudge_plus": self.ks_nudge_plus.keySequence().toString(),
         }
 
     def _on_apply(self):

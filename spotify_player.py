@@ -601,11 +601,25 @@ class SpotifyPlayer:
 
             raw_pos = 0.0
             duration = 0.0
+            last_updated_offset = 0.0
             if timeline:
                 if timeline.position:
                     raw_pos = timeline.position.total_seconds()
                 if timeline.end_time:
                     duration = timeline.end_time.total_seconds()
+                if hasattr(timeline, 'last_updated_time') and timeline.last_updated_time:
+                    try:
+                        import datetime
+                        now_utc = datetime.datetime.now(datetime.timezone.utc)
+                        last_updated_offset = max(0.0, (now_utc - timeline.last_updated_time).total_seconds())
+                    except Exception:
+                        last_updated_offset = 0.0
+
+            # If playing, factor in elapsed time since Windows GSMTC recorded last_updated_time
+            if status_str == "Playing":
+                effective_raw_pos = raw_pos + last_updated_offset
+            else:
+                effective_raw_pos = raw_pos
 
             track_id = f"{clean_artist} - {clean_title}"
             now = time.time()
@@ -614,26 +628,25 @@ class SpotifyPlayer:
             with self._state_lock:
                 if track_id != self._last_track_id:
                     self._last_track_id = track_id
-                    self._last_raw_pos = raw_pos
+                    self._last_raw_pos = effective_raw_pos
                     self._last_update_time = now
                     self._track_duration = duration
-                    calc_pos = raw_pos
-                    # Log track change (only once per track)
-                    log_event(f"[Detected Track] '{clean_artist} - {clean_title}' (Status: {status_str}, Pos: {raw_pos:.2f}s, Duration: {duration:.0f}s)")
+                    calc_pos = effective_raw_pos
+                    log_event(f"[Detected Track] '{clean_artist} - {clean_title}' (Status: {status_str}, Pos: {effective_raw_pos:.2f}s, Duration: {duration:.0f}s)")
                 elif status_str == "Playing":
-                    if raw_pos != self._last_raw_pos and raw_pos > 0:
-                        self._last_raw_pos = raw_pos
+                    if abs(effective_raw_pos - self._last_raw_pos) > 0.5:
+                        # Position updated from GSMTC (e.g. seek or progress update)
+                        self._last_raw_pos = effective_raw_pos
                         self._last_update_time = now
-                        calc_pos = raw_pos
+                        calc_pos = effective_raw_pos
                     else:
                         elapsed = now - self._last_update_time
                         calc_pos = self._last_raw_pos + elapsed
-                    # Update duration if available
                     if duration > 0:
                         self._track_duration = duration
                 else:
                     self._last_update_time = now
-                    calc_pos = self._last_raw_pos if self._last_raw_pos > 0 else raw_pos
+                    calc_pos = self._last_raw_pos if self._last_raw_pos > 0 else effective_raw_pos
 
                 # Cap position against track duration to prevent unbounded drift
                 if self._track_duration > 0 and calc_pos > self._track_duration:

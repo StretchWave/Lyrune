@@ -87,6 +87,43 @@ class LyricsRenderer(QWidget):
         self._fade_anim.setDuration(250)
         self._fade_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
 
+        # ── Periodic Adaptive Contrast Sampling Timer (Outside paintEvent) ──
+        self._adaptive_color: bool = False
+        self._adaptive_text_color: QColor = QColor("#FFFFFF")
+        self._sample_timer = QTimer(self)
+        self._sample_timer.setInterval(400)
+        self._sample_timer.timeout.connect(self._check_bg_luminance)
+        self._sample_timer.start()
+
+    def _check_bg_luminance(self) -> None:
+        """Sample desktop luminance outside paintEvent to prevent recursive feedback loops."""
+        if not getattr(self, '_adaptive_color', False) or not self.isVisible():
+            return
+        try:
+            from PyQt6.QtWidgets import QApplication
+            parent_win = self.window()
+            if not parent_win or not parent_win.isVisible():
+                return
+            pos = parent_win.mapToGlobal(parent_win.rect().topLeft())
+            screen = QApplication.primaryScreen()
+            if screen:
+                # Sample 20x20 area offset from top-left of the floating window
+                sample_pix = screen.grabWindow(0, max(0, pos.x() - 15), max(0, pos.y() - 15), 20, 20).toImage()
+                total_lum = 0
+                count = 0
+                for x in range(0, sample_pix.width(), 4):
+                    for y in range(0, sample_pix.height(), 4):
+                        c = sample_pix.pixelColor(x, y)
+                        total_lum += 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
+                        count += 1
+                avg_lum = (total_lum / count) if count > 0 else 0
+                target_col = QColor("#111111") if avg_lum > 135 else QColor("#FFFFFF")
+                if target_col != self._adaptive_text_color:
+                    self._adaptive_text_color = target_col
+                    self.update()
+        except Exception:
+            pass
+
     # ─── Animatable properties ────────────────────────────────────────
 
     def _get_scroll_y(self) -> float:
@@ -113,7 +150,7 @@ class LyricsRenderer(QWidget):
         """Set all lyric lines.  Called once when lyrics are fetched for a new song."""
         self._lines = lines
         self._status_message = ""
-        self._active_index = -1
+        self._active_index = -999
         self._scroll_y = 0.0
         self._fade_opacity = 1.0
         self._recalculate_layout()
@@ -124,7 +161,7 @@ class LyricsRenderer(QWidget):
         self._lines = []
         self._line_layouts = []
         self._status_message = message
-        self._active_index = -1
+        self._active_index = -999
         self._total_content_height = 0.0
         self.update()
 
@@ -184,6 +221,10 @@ class LyricsRenderer(QWidget):
         self._shadow_enabled = settings.get("shadow_enabled", True)
         self._shadow_color = QColor(settings.get("shadow_color", "#000000"))
         self._context_lines = new_ctx
+        self._adaptive_color = settings.get("adaptive_color", False)
+        self._active_text_outline = settings.get("active_text_outline", True)
+        self._active_line_opacity = settings.get("active_line_opacity", 100) / 100.0
+        self._context_line_opacity = settings.get("context_line_opacity", 45) / 100.0
 
         align_str = settings.get("text_align", "Center")
         if align_str == "Left":
@@ -207,6 +248,8 @@ class LyricsRenderer(QWidget):
         """Stop all running animations.  Call on app exit."""
         self._scroll_anim.stop()
         self._fade_anim.stop()
+        if hasattr(self, '_sample_timer'):
+            self._sample_timer.stop()
 
     # ─── Layout calculation ───────────────────────────────────────────
 
@@ -233,7 +276,7 @@ class LyricsRenderer(QWidget):
             else:
                 rect = fm.boundingRect(
                     QRect(0, 0, avail_width, 100000),
-                    int(Qt.TextFlag.TextWordWrap),
+                    int(Qt.TextFlag.TextWordWrap) | self._text_align,
                     text,
                 )
                 h = rect.height() + self._line_padding
@@ -300,12 +343,15 @@ class LyricsRenderer(QWidget):
         margin = self._margin
         avail = w - 2 * margin
 
+        is_adaptive = getattr(self, '_adaptive_color', False)
+        text_col = self._adaptive_text_color if is_adaptive else self._text_color
+
         # ── Status-message mode (no lyrics loaded) ──
         if not self._lines:
             font = self._get_font(bold=True)
             painter.setFont(font)
             painter.setOpacity(0.55 * self._fade_opacity)
-            painter.setPen(self._text_color)
+            painter.setPen(text_col)
             flags = (self._text_align
                      | int(Qt.AlignmentFlag.AlignVCenter)
                      | int(Qt.TextFlag.TextWordWrap))
@@ -329,15 +375,19 @@ class LyricsRenderer(QWidget):
             # ── Opacity based on index distance from active ──
             is_active = (i == self._active_index)
 
+            active_op = getattr(self, '_active_line_opacity', 1.0)
+            context_op = getattr(self, '_context_line_opacity', 0.45)
+            active_outline = getattr(self, '_active_text_outline', True)
+
             if is_active:
-                opacity = 1.0
+                opacity = active_op
             elif self._active_index < 0:
-                opacity = 0.40
+                opacity = context_op
             else:
                 idx_dist = abs(i - self._active_index)
                 if idx_dist <= self._context_lines:
-                    # Smooth exponential falloff
-                    opacity = max(0.10, 0.50 * (0.58 ** (idx_dist - 1)))
+                    falloff = 0.58 ** (idx_dist - 1)
+                    opacity = max(0.05, context_op * falloff)
                 else:
                     continue  # outside context window — skip entirely
 
@@ -354,17 +404,18 @@ class LyricsRenderer(QWidget):
                      | int(Qt.AlignmentFlag.AlignTop)
                      | int(Qt.TextFlag.TextWordWrap))
 
-            # ── Shadow (active line only) ──
-            if is_active and self._shadow_enabled:
-                painter.setOpacity(opacity * 0.45)
-                painter.setPen(self._shadow_color)
-                for dx, dy in ((1, 1), (2, 2), (0, 2), (2, 0)):
-                    painter.drawText(text_rect.adjusted(dx, dy, 0, 0),
-                                     flags, text)
+            # ── High Contrast Shadow / Outline ──
+            if is_active and self._shadow_enabled and active_outline:
+                painter.setOpacity(opacity * 0.50)
+                sh_color = self._shadow_color if not is_adaptive else (QColor("#FFFFFF") if text_col.lightness() < 128 else QColor("#000000"))
+                painter.setPen(sh_color)
+                # 8-direction shadow stroke for 100% legibility on any background
+                for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1), (0, 2), (2, 0), (-2, 0), (0, -2)):
+                    painter.drawText(text_rect.adjusted(dx, dy, dx, dy), flags, text)
 
             # ── Main text ──
             painter.setOpacity(opacity)
-            painter.setPen(self._text_color)
+            painter.setPen(text_col)
             painter.drawText(text_rect, flags, text)
 
         painter.end()
