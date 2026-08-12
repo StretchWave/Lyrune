@@ -3,8 +3,9 @@ import json
 from typing import Dict, Any, Optional
 from PyQt6.QtCore import QTimer
 
-# Resolve settings path relative to THIS script's directory, not CWD
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Resolve settings path relative to the project root, not CWD.
+# (Module lives in the lyrune/ package, legacy settings.json sits at the repo root.)
+_LOCAL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "font_family": "Segoe UI",
@@ -130,14 +131,17 @@ class SettingsManager:
         app_dir = _get_app_config_dir()
         self.filepath = os.path.join(app_dir, filename)
 
-        # Legacy local settings migration
-        local_path = os.path.join(_SCRIPT_DIR, filename)
-        if not os.path.exists(self.filepath) and os.path.exists(local_path):
-            try:
-                import shutil
-                shutil.copy2(local_path, self.filepath)
-            except Exception:
-                pass
+        # Legacy local settings migration (repo root, and old in-package location)
+        legacy_paths = [os.path.join(_LOCAL_DIR, filename), os.path.join(_LOCAL_DIR, 'lyrune', filename)]
+        if not os.path.exists(self.filepath):
+            for local_path in legacy_paths:
+                if os.path.exists(local_path):
+                    try:
+                        import shutil
+                        shutil.copy2(local_path, self.filepath)
+                    except Exception:
+                        pass
+                    break
 
         self.settings: Dict[str, Any] = dict(DEFAULT_SETTINGS)
         self._save_timer: Optional[QTimer] = None

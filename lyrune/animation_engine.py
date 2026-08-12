@@ -16,7 +16,7 @@ from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import (
     Qt, QPropertyAnimation, QEasingCurve,
-    QTimer, pyqtProperty, pyqtSignal, QRect, QRectF, QSize
+    QTimer, pyqtProperty, pyqtSignal, QRect, QRectF
 )
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import (

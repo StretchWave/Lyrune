@@ -15,7 +15,6 @@ HAS_WINRT = False
 if sys.platform == "win32":
     try:
         import winrt.windows.media.control as wmc
-        import winrt.windows.foundation.collections as wfc
         HAS_WINRT = True
     except Exception:
         HAS_WINRT = False
@@ -593,7 +592,7 @@ class SpotifyPlayer:
                     if p:
                         c_art, c_tit = self._clean_track_info(p.title, p.artist)
                         if c_tit:
-                            session, props = curr, p
+                            session = curr
                             clean_artist, clean_title = c_art, c_tit
 
             if not session or not clean_title:

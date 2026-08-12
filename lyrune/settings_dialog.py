@@ -2,23 +2,21 @@ import os
 import re
 import platform
 import sys
-from typing import Dict, Any, Optional, List, Tuple
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint, QRect
-from PyQt6.QtGui import QFont, QColor, QKeySequence, QIcon, QMouseEvent
+from typing import Dict, Any, Optional
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint
+from PyQt6.QtGui import QFont, QColor, QKeySequence, QMouseEvent
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
-    QLabel, QPushButton, QComboBox, QFontComboBox, QSpinBox, QSlider,
-    QTextEdit, QCheckBox, QListWidget, QListWidgetItem, QStackedWidget,
-    QScrollArea, QFrame, QApplication, QColorDialog, QMessageBox, QLineEdit,
+    QLabel, QPushButton, QComboBox, QFontComboBox, QTextEdit, QCheckBox, QListWidget, QListWidgetItem, QStackedWidget,
+    QScrollArea, QFrame, QApplication, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView
 )
 
 from lyrune.ui_theme import (
-    PALETTE, DARK_THEME_STYLESHEET, get_icon, create_swatch_icon,
-    ToggleSwitch, ValueSlider, ColorSwatchButton, KeycapWidget
+    PALETTE, DARK_THEME_STYLESHEET, get_icon, ToggleSwitch, ValueSlider, ColorSwatchButton, KeycapWidget
 )
 from lyrune.settings_manager import SettingsManager, PRESETS
-from lyrune.logger import AppLogger, log_event
+from lyrune.logger import AppLogger
 from lyrune.animation_engine import LyricsRenderer
 from lyrune.lrclib_client import LRCLibClient
 
@@ -720,11 +718,8 @@ class SettingsDialog(QDialog):
     # 4. Sticky Footer Action Bar
     def _init_sticky_footer(self, parent_layout: QVBoxLayout):
         footer_frame = QFrame(self)
+        footer_frame.setObjectName("stickyFooter")
         footer_frame.setFixedHeight(50)
-        footer_frame.setStyleSheet(
-            f"background-color: {PALETTE.surface};"
-            f" border-top: 1px solid {PALETTE.border};"
-        )
         footer_layout = QHBoxLayout(footer_frame)
         footer_layout.setContentsMargins(14, 8, 14, 8)
 
@@ -735,15 +730,16 @@ class SettingsDialog(QDialog):
 
         footer_layout.addStretch()
 
-        self.btn_cancel = QPushButton("Cancel", footer_frame)
-        self.btn_cancel.setIcon(get_icon("close"))
-        self.btn_cancel.clicked.connect(self.reject)
-        footer_layout.addWidget(self.btn_cancel)
-
+        # Standard Windows action order: Apply → Cancel → OK (primary rightmost)
         self.btn_apply = QPushButton("Apply", footer_frame)
         self.btn_apply.setIcon(get_icon("save"))
         self.btn_apply.clicked.connect(self._on_apply)
         footer_layout.addWidget(self.btn_apply)
+
+        self.btn_cancel = QPushButton("Cancel", footer_frame)
+        self.btn_cancel.setIcon(get_icon("close"))
+        self.btn_cancel.clicked.connect(self.reject)
+        footer_layout.addWidget(self.btn_cancel)
 
         self.btn_ok = QPushButton("OK", footer_frame)
         self.btn_ok.setObjectName("btn_primary")
@@ -858,7 +854,6 @@ class SettingsDialog(QDialog):
             return
 
         s = self._gather_settings()
-        font = QFont(s["font_family"], max(12, int(s["font_size"] * 0.6)), QFont.Weight.Bold if s["font_bold"] else QFont.Weight.Normal)
         self.preview_sub.setVisible(s["show_song_info"])
 
         qbg = QColor(s["bg_color"])

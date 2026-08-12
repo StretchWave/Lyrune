@@ -1,6 +1,24 @@
-# Changelog — LyricScript
+# Changelog — Lyrune
 
-All notable changes to the LyricScript project are documented in this file.
+All notable changes to the Lyrune project are documented in this file.
+
+## [2.0.0] - 2026-08-12 — Lyrune (renamed from LyricScript)
+
+The first release under the **Lyrune** name. Earlier 2.x changelog entries below were recorded under the old *LyricScript* name.
+
+### Changed
+- **Project renamed to Lyrune**: the app ships as the `lyrune` Python package; documentation, installers, and release artifacts all use the Lyrune name.
+- **Packaged layout**: application modules moved into the `lyrune/` package with a thin root `main.py` entry point (`python main.py` or `python -m lyrune`).
+- **Settings storage**: config now lives in `%APPDATA%/Lyrune` (Windows) or `~/.config/Lyrune` (Linux).
+- **GitHub Releases**: the CI workflow builds and attaches `Lyrune-Windows-x64.zip`, `Lyrune-Standalone-x64.exe`, and `Lyrune-Linux-x64.tar.gz` on version tags.
+
+### Fixed
+- **Settings dialog footer buttons**: the OK button no longer renders as invisible dark-on-dark text — the footer's inline stylesheet created a Qt style-sheet boundary that broke the `btn_primary` green styling.
+- **Overlay hover jitter**: the hover border is now painter-drawn and auto-resize-height defers while the pointer is over the overlay, so the window stays put under the cursor.
+- **Release pipeline**: fixed the CI entry point (`lyricscript/main.py` → `main.py`) that would have failed every release build.
+
+### Housekeeping
+- Removed duplicate root-level modules and tracked bytecode/cache files; cleaned unused imports; added MIT `LICENSE` and a release-ready `.gitignore`.
 
 ## [2.1.3] - 2026-08-12
 
@@ -32,7 +50,7 @@ All notable changes to the LyricScript project are documented in this file.
 - **WinRT Session Manager Recovery**: Added automatic manager reset (`self._gsm_manager = None`) on exception to recover from stale Windows Media service handles (`spotify_player.py`).
 - **LRCLIB Search Match Validation**: Introduced title token similarity validation in `_api_search()` to prevent fuzzy search from binding lyrics to wrong tracks with identical single-word titles (`lrclib_client.py`).
 - **Thread-Safe Logging**: Wrapped all logger state mutations (`history`, `_last_message`, `_suppressed_count`, `_seen_keys`) inside `with self._lock:` blocks in `AppLogger` (`logger.py`).
-- **App Data Config Migration**: Settings are now saved to `%APPDATA%/LyricScript/settings.json` (or `~/.config/LyricScript/settings.json`) with legacy local file migration and `aboutToQuit` exit hooks (`settings_manager.py`).
+- **App Data Config Migration**: Settings are now saved to `%APPDATA%/Lyrune/settings.json` (or `~/.config/Lyrune/settings.json`) with legacy local file migration and `aboutToQuit` exit hooks (`settings_manager.py`).
 - **Atomic Cache & Settings Writes**: Replaced raw file writes with temporary file generation + `os.replace` atomic commits for disk cache (`lrclib_client.py`) and settings (`settings_manager.py`).
 - **LRC `[offset:]` Tag Support**: Added parsing for LRC header `[offset: +/-ms]` metadata tags, shifting all timestamps dynamically (`lrc_parser.py`).
 - **Animation Fighting Prevention**: Explicitly stopped running `_scroll_anim` instances when new lyric lines or status messages are set (`animation_engine.py`).

@@ -5,9 +5,9 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"urllib3")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"requests")
 
-from PyQt6.QtWidgets import QApplication
-from lyrune.lyrics_widget import LyricsWidget
-from lyrune.logger import log_event
+from PyQt6.QtWidgets import QApplication  # noqa: E402 (warnings filter above must run first)
+from lyrune.lyrics_widget import LyricsWidget  # noqa: E402
+from lyrune.logger import log_event  # noqa: E402
 
 def main():
     """

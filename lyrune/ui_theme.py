@@ -1,10 +1,9 @@
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional
 from PyQt6.QtGui import QIcon, QColor, QPixmap, QPainter, QBrush, QPen, QFont, QKeySequence
-from PyQt6.QtCore import QSize, Qt, pyqtSignal, QRectF, QPropertyAnimation, QEasingCurve, pyqtProperty
+from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPropertyAnimation, QEasingCurve, pyqtProperty
 from PyQt6.QtWidgets import (
-    QWidget, QCheckBox, QSlider, QHBoxLayout, QLabel, QPushButton, QColorDialog,
-    QKeySequenceEdit, QVBoxLayout, QFrame
+    QWidget, QSlider, QHBoxLayout, QLabel, QPushButton, QColorDialog
 )
 import qtawesome as qta
 
@@ -409,6 +408,14 @@ QDialog, QWidget#settingsRoot {{
 QWidget#customTitleBar {{
     background-color: {PALETTE.surface};
     border-bottom: 1px solid {PALETTE.border};
+}}
+
+/* Sticky Footer Action Bar — styled via the main sheet (not an inline stylesheet,
+   which would create a Qt style-sheet boundary and break QPushButton#btn_primary
+   for buttons inside it). */
+QFrame#stickyFooter {{
+    background-color: {PALETTE.surface};
+    border-top: 1px solid {PALETTE.border};
 }}
 
 /* Scroll Area */

@@ -94,7 +94,7 @@ class LRCParser:
 
         # Split into parallel lists for bisect
         self._timestamps = [t for t, _ in pairs]
-        self._lyrics = [l for _, l in pairs]
+        self._lyrics = [text for _, text in pairs]
 
     def get_current_lyric(self, current_time: float) -> str:
         """
@@ -185,4 +185,4 @@ class LRCParser:
     @property
     def lines(self) -> List[Tuple[float, str]]:
         """Legacy compatibility: returns list of (timestamp, lyric) tuples."""
-        return list(zip(self._timestamps, self._lyrics))
+        return list(zip(self._timestamps, self._lyrics, strict=True))

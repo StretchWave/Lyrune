@@ -1,11 +1,11 @@
-; LyricScript Inno Setup Installer Script
-; Generates a traditional Windows Setup Wizard (LyricScript-Setup.exe)
+; Lyrune Inno Setup Installer Script
+; Generates a traditional Windows Setup Wizard (Lyrune-Setup.exe)
 
-#define MyAppName "LyricScript"
+#define MyAppName "Lyrune"
 #define MyAppVersion "2.0.0"
 #define MyAppPublisher "StretchWave"
-#define MyAppURL "https://github.com/StretchWave/LyricScript"
-#define MyAppExeName "LyricScript.exe"
+#define MyAppURL "https://github.com/StretchWave/Lyrune"
+#define MyAppExeName "Lyrune.exe"
 
 [Setup]
 AppId={{D37E94B1-8C7F-4B2E-9011-85A3F9D1E8F2}
@@ -19,7 +19,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=dist
-OutputBaseFilename=LyricScript-Setup-v2.0.0
+OutputBaseFilename=Lyrune-Setup-v2.0.0
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -30,10 +30,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "autostart"; Description: "Automatically launch LyricScript on Windows startup"; GroupDescription: "Startup options:"
+Name: "autostart"; Description: "Automatically launch Lyrune on Windows startup"; GroupDescription: "Startup options:"
 
 [Files]
-Source: "dist\LyricScript\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\Lyrune\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

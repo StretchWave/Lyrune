@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lyricscript"
+name = "lyrune"
 version = "2.0.0"
-description = "Desktop lyrics overlay for Spotify — real-time synced lyrics on your screen"
+description = "Lyrune — desktop lyrics overlay for Spotify — real-time synced lyrics on your screen"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -49,18 +49,19 @@ linux = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/StretchWave/LyricScript"
-Repository = "https://github.com/StretchWave/LyricScript"
-Issues = "https://github.com/StretchWave/LyricScript/issues"
+Homepage = "https://github.com/StretchWave/Lyrune"
+Repository = "https://github.com/StretchWave/Lyrune"
+Issues = "https://github.com/StretchWave/Lyrune/issues"
 
 [project.scripts]
-lyricscript = "lyricscript.main:main"
+lyrune = "lyrune.main:main"
 
 [project.gui-scripts]
-lyricscript-gui = "lyricscript.main:main"
+lyrune-gui = "lyrune.main:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["lyrune*"]  # whitelist keeps PyInstaller output dirs (dist/ build/) out of the wheel
 
-[tool.setuptools.package-data]
-lyricscript = ["*.json"]
+# No static package data: settings.json lives at the repo root and the runtime
+# lyrics cache is stored in the user app-data dir, so nothing extra ships in the wheel.

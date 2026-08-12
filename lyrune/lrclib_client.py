@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import json
 import time
@@ -9,9 +10,24 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from lyrune.logger import log_event
 
-# Disk cache directory — next to the script
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_CACHE_DIR = os.path.join(_SCRIPT_DIR, ".lyrics_cache")
+
+def _resolve_cache_dir() -> str:
+    """Persistent lyrics cache location.
+
+    - Frozen app (PyInstaller): %APPDATA%/Lyrune (or ~/.config/Lyrune) so cached
+      lyrics survive app updates — the _MEI temp dir would be wiped every launch.
+    - Source / dev: next to the package in the repo (gitignored).
+    """
+    if getattr(sys, "frozen", False):
+        if os.name == "nt":
+            base = os.environ.get("APPDATA", os.path.expanduser("~"))
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+        return os.path.join(base, "Lyrune", ".lyrics_cache")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".lyrics_cache")
+
+
+_CACHE_DIR = _resolve_cache_dir()
 
 
 class LyricsFetchWorker(QThread):

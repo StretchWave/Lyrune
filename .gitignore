@@ -1,38 +1,49 @@
-# Byte-compiled / cached
+# ─── Byte-compiled / cached ────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual environments
+# ─── Virtual environments ──────────────────────────────────────────────
 venv/
 .venv/
 env/
 
-# Distribution / packaging
+# ─── Distribution / packaging (build outputs are regenerated) ──────────
 dist/
 build/
 *.egg-info/
 *.egg
 
-# IDE / Editor
+# ─── Test / lint caches ────────────────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ─── IDE / Editor ──────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS files
+# ─── OS files ──────────────────────────────────────────────────────────
 Thumbs.db
 Desktop.ini
 .DS_Store
 
-# LyricScript runtime files
+# ─── Lyrune runtime data (user-local, never commit) ────────────────────
+# Lyrics fetched from LRCLIB are cached here at runtime; the folder also
+# exists next to the package during development.
 .lyrics_cache/
 settings.json
 *.tmp_*
 
-# PyInstaller
-*.spec
+# ─── Release artifacts written to the repo root by the CI workflow ──────
+/Lyrune-Windows-x64.zip
+/Lyrune-Standalone-x64.exe
+/Lyrune-Setup-*.exe
 
-# Internal dev
+# ─── Internal dev tools ────────────────────────────────────────────────
 .freebuff/

@@ -47,7 +47,7 @@ class AppLogger(QObject):
         """
         Log a message. Duplicate messages within THROTTLE_WINDOW seconds
         are suppressed and summarized when a new message arrives.
-        
+
         Args:
             force: If True, bypasses throttling entirely.
         """

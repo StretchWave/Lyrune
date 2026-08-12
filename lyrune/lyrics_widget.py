@@ -5,11 +5,11 @@ from PyQt6.QtCore import (
     Qt, QTimer, QPoint
 )
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QSizeGrip,
+    QApplication, QWidget, QLabel, QVBoxLayout, QSizeGrip,
     QMenu, QSystemTrayIcon
 )
 from PyQt6.QtGui import (
-    QFont, QColor, QAction, QActionGroup, QIcon, QPixmap, QPainter,
+    QColor, QAction, QActionGroup, QIcon, QPixmap, QPainter,
     QPen, QBrush, QShortcut, QKeySequence
 )
 
@@ -20,7 +20,7 @@ from lyrune.settings_manager import SettingsManager
 from lyrune.settings_dialog import SettingsDialog
 from lyrune.logger import log_event
 from lyrune.animation_engine import LyricsRenderer
-from lyrune.ui_theme import PALETTE, ICONS, get_icon, MENU_STYLESHEET
+from lyrune.ui_theme import get_icon, MENU_STYLESHEET
 
 
 def create_system_tray_icon() -> QIcon:
@@ -65,7 +65,10 @@ class LyricsWidget(QWidget):
       - Async lyrics fetching: HTTP requests run on a QThread, never blocking the GUI.
       - Loading/unsynced/synced display states with user feedback.
       - Debounced resize: batches dimension saves instead of per-pixel disk writes.
-      - Hover only toggles the border CSS, doesn't re-apply all settings.
+      - Hover border is painter-drawn (no stylesheet swap) so hovering never touches
+        the layout or native window frame — the overlay can't shift under the cursor.
+      - Auto-resize-height is deferred while the pointer is over the overlay so the
+        window surface stays put while interacting (stable right-click hit-testing).
       - Saves/restores window position across restarts.
       - Proper drawn tray icon (no emoji rendering issues).
       - Ctrl+Shift+L keyboard shortcut to toggle visibility.
@@ -93,6 +96,7 @@ class LyricsWidget(QWidget):
         self._is_hovered: bool = False
         self._is_dragging: bool = False
         self._drag_pos: QPoint = QPoint()
+        self._pending_target_h: Optional[int] = None  # deferred auto-resize while hovering/dragging
 
         # Async lyrics worker
         self._lyrics_worker: Optional[LyricsFetchWorker] = None
@@ -330,12 +334,32 @@ class LyricsWidget(QWidget):
         self.player.set_target_source(source_id)
 
     def _on_ideal_height_changed(self, ideal_height: int):
-        """Adapt container window height to fit visible lyrics context lines."""
-        if self.settings_mgr.get("auto_resize_height", True):
-            extra = 28 if self.sub_label.isVisible() else 0
-            target_h = max(70, ideal_height + extra + 20)
-            if abs(self.height() - target_h) > 4:
-                self.resize(self.width(), target_h)
+        """Adapt container window height to fit visible lyrics context lines.
+
+        While the pointer is over the overlay (or the user is dragging it), the
+        resize is deferred so the window surface never moves under the cursor —
+        otherwise the auto-fit would shrink/grow the window mid-hover, making the
+        overlay appear to jump and breaking right-click (Settings) hit-testing.
+        """
+        if not self.settings_mgr.get("auto_resize_height", True):
+            return
+        extra = 28 if self.sub_label.isVisible() else 0
+        target_h = max(70, ideal_height + extra + 20)
+        if self._is_hovered or self._is_dragging:
+            self._pending_target_h = target_h
+            return
+        self._pending_target_h = None
+        if abs(self.height() - target_h) > 4:
+            self.resize(self.width(), target_h)
+
+    def _apply_pending_resize(self):
+        """Apply a deferred auto-resize once the user is no longer interacting."""
+        target_h = getattr(self, '_pending_target_h', None)
+        if target_h is None or self._is_hovered or self._is_dragging:
+            return
+        self._pending_target_h = None
+        if abs(self.height() - target_h) > 4:
+            self.resize(self.width(), target_h)
 
     def _quit_application(self):
         """Safely stops worker thread, animations, and exits application."""
@@ -449,15 +473,34 @@ class LyricsWidget(QWidget):
         self._update_shortcuts_from_settings(s)
 
     def _update_widget_border(self, bg_rgba: Optional[str] = None, border: bool = False):
-        """Sets widget background with optional border."""
+        """Sets the translucent background via a *constant* stylesheet.
+
+        The border itself is drawn in paintEvent (see below) instead of being
+        toggled in the stylesheet. Toggling a stylesheet border on a frameless
+        translucent window can trigger a style-change/re-layout cascade on some
+        Windows systems, which makes the overlay appear to jump by a pixel or two
+        on hover. Keeping the stylesheet identical across hover states means hover
+        only ever causes a repaint — never a geometry/style change.
+        """
         if bg_rgba is None:
             bg_rgba = getattr(self, '_base_bg_rgba', 'transparent')
-        border_str = "border: 1px solid rgba(255, 255, 255, 0.12);" if border else "border: none;"
+        self._border_visible = bool(border)
         self.setStyleSheet(
             f"background-color: {bg_rgba};"
             f" border-radius: 10px;"
-            f" {border_str}"
         )
+        self.update()
+
+    def paintEvent(self, event):        # noqa: N802
+        """Draws the hover/settings border as pure painting (no geometry effects)."""
+        super().paintEvent(event)
+        if getattr(self, '_border_visible', False):
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor(255, 255, 255, 31), 1))  # rgba(255,255,255,0.12)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
+            painter.end()
 
     def _init_timer(self):
         self.timer = QTimer(self)
@@ -590,6 +633,7 @@ class LyricsWidget(QWidget):
     def leaveEvent(self, event):
         self._is_hovered = False
         self._update_widget_border(self._base_bg_rgba, border=getattr(self, '_border_enabled', False))
+        self._apply_pending_resize()
         super().leaveEvent(event)
 
     # --- System Tray Actions ---
@@ -662,6 +706,7 @@ class LyricsWidget(QWidget):
                 pos = self.pos()
                 self.settings_mgr.set("window_x", pos.x())
                 self.settings_mgr.set("window_y", pos.y())
+                self._apply_pending_resize()
         super().mouseReleaseEvent(event)
 
     def resizeEvent(self, event):

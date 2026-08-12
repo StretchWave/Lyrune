@@ -1,4 +1,4 @@
-name: Build & Release LyricScript
+name: Build & Release Lyrune
 
 on:
   push:
@@ -27,19 +27,19 @@ jobs:
 
       - name: Build Executable with PyInstaller (Folder & Single-File Standalone)
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name "LyricScript" lyricscript/main.py
-          pyinstaller --noconfirm --onefile --windowed --name "LyricScript-Standalone" lyricscript/main.py
+          pyinstaller --noconfirm --onedir --windowed --name "Lyrune" main.py
+          pyinstaller --noconfirm --onefile --windowed --name "Lyrune-Standalone" main.py
 
       - name: Compress Release Archive
         run: |
-          Compress-Archive -Path "dist/LyricScript/*" -DestinationPath "LyricScript-Windows-x64.zip"
-          Copy-Item "dist/LyricScript-Standalone.exe" -Destination "LyricScript-Standalone-x64.exe"
+          Compress-Archive -Path "dist/Lyrune/*" -DestinationPath "Lyrune-Windows-x64.zip"
+          Copy-Item "dist/Lyrune-Standalone.exe" -Destination "Lyrune-Standalone-x64.exe"
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LyricScript-Windows-x64
-          path: LyricScript-Windows-x64.zip
+          name: Lyrune-Windows-x64
+          path: Lyrune-Windows-x64.zip
 
   build-linux:
     runs-on: ubuntu-latest
@@ -63,17 +63,17 @@ jobs:
 
       - name: Build Linux Binary with PyInstaller
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name "LyricScript" lyricscript/main.py
+          pyinstaller --noconfirm --onedir --windowed --name "Lyrune" main.py
 
       - name: Archive Linux Release
         run: |
-          tar -czvf LyricScript-Linux-x64.tar.gz -C dist/LyricScript .
+          tar -czvf Lyrune-Linux-x64.tar.gz -C dist/Lyrune .
 
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LyricScript-Linux-x64
-          path: LyricScript-Linux-x64.tar.gz
+          name: Lyrune-Linux-x64
+          path: Lyrune-Linux-x64.tar.gz
 
   release:
     needs: [build-windows, build-linux]
@@ -83,17 +83,17 @@ jobs:
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
         with:
-          name: LyricScript-Windows-x64
+          name: Lyrune-Windows-x64
 
       - name: Download Linux Artifact
         uses: actions/download-artifact@v4
         with:
-          name: LyricScript-Linux-x64
+          name: Lyrune-Linux-x64
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            LyricScript-Standalone-x64.exe
-            LyricScript-Windows-x64.zip
-            LyricScript-Linux-x64.tar.gz
+            Lyrune-Standalone-x64.exe
+            Lyrune-Windows-x64.zip
+            Lyrune-Linux-x64.tar.gz
