@@ -44,7 +44,39 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "auto_hide_on_pause": False,  # Auto-hide overlay when media is paused/stopped
     "exclude_from_capture": False, # Exclude overlay window from OBS/Discord screen capture (Windows)
     "track_sync_offsets": {},     # Per-track sync timing offsets persistent dict
-    "snap_to_corners": False,     # Snap overlay to nearest screen corner when dragged near edges
+    "snap_to_corners": True,      # Snap overlay to screen borders/corners when dragged near edges
+
+    # Standalone Visualizer Settings
+    "visualizer_enabled": True,
+    "visualizer_style": "Pill Bars",
+    "visualizer_shape": "Pill",        # "Pill", "Rounded Bar", "Square Bar"
+    "visualizer_corner_radius": 4,     # px corner radius for Rounded Bar
+    "visualizer_auto_bar_count": True, # Auto-adapt bar count to width
+    "visualizer_bar_count": 32,        # Custom manual bar count
+    "visualizer_x": -1,
+    "visualizer_y": -1,
+    "visualizer_width": 320,           # Logical length
+    "visualizer_height": 64,           # Logical thickness
+    "visualizer_orientation": "BOTTOM",
+    "visualizer_snap_edge": "BOTTOM",
+    "visualizer_opacity": 100,
+    "visualizer_color_mode": "Solid",  # "Solid", "Gradient", "Active Lyric Color"
+    "visualizer_color": "#FFFFFF",
+    "visualizer_gradient_stops": [
+        {"pos": 0.0, "color": "#FF4D8D"},
+        {"pos": 0.5, "color": "#8B5CF6"},
+        {"pos": 1.0, "color": "#3B82F6"}
+    ],
+    "visualizer_gradient_direction": "Follow Visualizer", # "Follow Visualizer", "Fixed Horizontal", "Fixed Vertical", "Reverse"
+    "visualizer_bar_width": 4,
+    "visualizer_bar_spacing": 3,
+    "visualizer_max_height": 100,
+    "visualizer_sensitivity": 100,
+    "visualizer_smoothing": 75,
+    "visualizer_click_through": False,
+    "visualizer_always_on_top": True,
+    "visualizer_exclude_from_capture": False,
+    "shortcut_toggle_visualizer": "Ctrl+Shift+V",
 }
 
 PRESETS: Dict[str, Dict[str, Any]] = {
@@ -236,5 +268,13 @@ class SettingsManager:
 
     def reset_to_defaults(self) -> Dict[str, Any]:
         self.settings = dict(DEFAULT_SETTINGS)
+        self.save_immediate()
+        return self.settings
+
+    def reset_visualizer_settings(self) -> Dict[str, Any]:
+        """Resets ONLY visualizer-related settings back to defaults without touching lyrics or app settings."""
+        vis_keys = [k for k in DEFAULT_SETTINGS if k.startswith("visualizer_") and k not in ("visualizer_x", "visualizer_y")]
+        for k in vis_keys:
+            self.settings[k] = DEFAULT_SETTINGS[k]
         self.save_immediate()
         return self.settings

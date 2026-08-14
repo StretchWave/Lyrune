@@ -2,9 +2,11 @@ import os
 import re
 import platform
 import sys
-from typing import Dict, Any, Optional
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint
-from PyQt6.QtGui import QFont, QColor, QKeySequence, QMouseEvent
+import math
+import time
+from typing import Dict, Any, Optional, List
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QTimer, QRectF, QPointF
+from PyQt6.QtGui import QFont, QColor, QKeySequence, QMouseEvent, QPainter, QBrush, QPen, QLinearGradient
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QPushButton, QComboBox, QFontComboBox, QTextEdit, QCheckBox, QListWidget, QListWidgetItem, QStackedWidget,
@@ -19,6 +21,232 @@ from lyrune.settings_manager import SettingsManager, PRESETS
 from lyrune.logger import AppLogger
 from lyrune.animation_engine import LyricsRenderer
 from lyrune.lrclib_client import LRCLibClient
+from lyrune.visualizer import BarVisualizer, AudioData
+
+
+class VisualizerPreviewWidget(QWidget):
+    """
+    Live interactive preview canvas for the visualizer inside SettingsDialog.
+    Runs simulated musical frequencies at 60 FPS to demonstrate current shape,
+    gradient, spacing, bar width, and opacity live.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(105)
+        self.setMinimumWidth(260)
+        self.renderer = BarVisualizer()
+        self.renderer.set_orientation("BOTTOM")
+        self._phase = 0.0
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._on_tick)
+        self._timer.start()
+
+    def update_style(self, settings_dict: Dict[str, Any]):
+        self.renderer.set_style(settings_dict)
+        self.update()
+
+    def _on_tick(self):
+        if not self.isVisible():
+            return
+        self._phase += 0.05
+        count = self.renderer.get_bar_count()
+        amps = []
+        for i in range(count):
+            norm = i / max(1, count - 1)
+            val = (
+                0.5 * math.sin(self._phase * 3.0 + norm * 5.0) +
+                0.3 * math.sin(self._phase * 1.5 - norm * 8.0) +
+                0.2 * math.cos(self._phase * 4.0 + norm * 12.0)
+            )
+            amps.append(max(0.08, min(1.0, 0.45 + 0.55 * val)))
+        self.renderer.update_audio(AudioData(amplitudes=amps, energy=0.7, timestamp=time.time()))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        bg_color = QColor(PALETTE.surface_elevated)
+        painter.setBrush(QBrush(bg_color))
+        painter.setPen(QPen(QColor(PALETTE.border), 1))
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
+
+        draw_rect = self.rect().adjusted(10, 10, -10, -10)
+        self.renderer.resize(draw_rect.width(), draw_rect.height())
+        self.renderer.paint(painter, draw_rect)
+
+
+class GradientPreviewBar(QWidget):
+    """Interactive visual gradient preview strip."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(22)
+        self.stops: List[Dict[str, Any]] = []
+
+    def set_stops(self, stops: List[Dict[str, Any]]):
+        self.stops = list(stops)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        if not self.stops:
+            return
+
+        grad = QLinearGradient(self.rect().left(), 0, self.rect().right(), 0)
+        for s in self.stops:
+            p = max(0.0, min(1.0, float(s.get("pos", 0.0))))
+            c = QColor(s.get("color", "#FFFFFF"))
+            grad.setColorAt(p, c)
+
+        painter.setBrush(QBrush(grad))
+        painter.setPen(QPen(QColor(PALETTE.border), 1))
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 5, 5)
+
+
+class GradientStopRow(QWidget):
+    """
+    A single gradient stop editor row:
+    Position Slider (0-100%) + Color Swatch Button + Delete Button.
+    """
+    changed = pyqtSignal()
+    deleteRequested = pyqtSignal()
+
+    def __init__(self, pos: float, color: str, can_delete: bool = True, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(8)
+
+        pos_pct = int(round(pos * 100))
+        self.slider = ValueSlider(0, 100, pos_pct, "%", self)
+        self.slider.valueChanged.connect(lambda _: self.changed.emit())
+        layout.addWidget(QLabel("Stop Pos:", self))
+        layout.addWidget(self.slider, 1)
+
+        self.btn_color = ColorSwatchButton(color, self)
+        self.btn_color.colorChanged.connect(lambda _: self.changed.emit())
+        layout.addWidget(self.btn_color)
+
+        self.btn_delete = QPushButton(self)
+        self.btn_delete.setFixedSize(26, 26)
+        self.btn_delete.setIcon(get_icon("close", color=PALETTE.text_secondary))
+        self.btn_delete.setToolTip("Remove Gradient Stop")
+        self.btn_delete.setEnabled(can_delete)
+        self.btn_delete.clicked.connect(self.deleteRequested.emit)
+        layout.addWidget(self.btn_delete)
+
+    def get_data(self) -> Dict[str, Any]:
+        return {
+            "pos": self.slider.value() / 100.0,
+            "color": self.btn_color.color()
+        }
+
+    def set_data(self, pos: float, color: str):
+        self.slider.setValue(int(round(pos * 100)))
+        self.btn_color.setColor(color)
+
+
+class GradientEditorCard(QGroupBox):
+    """Full gradient editing card with interactive preview bar, stops table, add/remove, and presets."""
+    gradientChanged = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__("Gradient Color Stops", parent)
+        self.card_layout = QVBoxLayout(self)
+        self.card_layout.setContentsMargins(10, 10, 10, 10)
+        self.card_layout.setSpacing(8)
+
+        self.preview_bar = GradientPreviewBar(self)
+        self.card_layout.addWidget(self.preview_bar)
+
+        self.stops_container = QWidget(self)
+        self.stops_layout = QVBoxLayout(self.stops_container)
+        self.stops_layout.setContentsMargins(0, 0, 0, 0)
+        self.stops_layout.setSpacing(4)
+        self.card_layout.addWidget(self.stops_container)
+
+        self._rows: List[GradientStopRow] = []
+
+        actions_layout = QHBoxLayout()
+        self.btn_add_stop = QPushButton("+ Add Color Stop", self)
+        self.btn_add_stop.setObjectName("btn_secondary")
+        self.btn_add_stop.clicked.connect(self._add_stop_clicked)
+        actions_layout.addWidget(self.btn_add_stop)
+
+        actions_layout.addStretch(1)
+
+        self.presets = {
+            "Spotify Glow": [{"pos": 0.0, "color": "#1DB954"}, {"pos": 1.0, "color": "#00F2FE"}],
+            "Sunset": [{"pos": 0.0, "color": "#FF512F"}, {"pos": 0.5, "color": "#DD2476"}, {"pos": 1.0, "color": "#8A2387"}],
+            "Cyber Neon": [{"pos": 0.0, "color": "#FF007F"}, {"pos": 0.5, "color": "#7928CA"}, {"pos": 1.0, "color": "#00DFD8"}],
+            "Electric Fire": [{"pos": 0.0, "color": "#FF416C"}, {"pos": 1.0, "color": "#FF4B2B"}],
+        }
+
+        for name, p_stops in self.presets.items():
+            p_btn = QPushButton(name, self)
+            p_btn.setObjectName("btn_ghost")
+            p_btn.clicked.connect(lambda _, s=p_stops: self.set_stops(s))
+            actions_layout.addWidget(p_btn)
+
+        self.card_layout.addLayout(actions_layout)
+
+    def set_stops(self, stops: List[Dict[str, Any]]):
+        for r in self._rows:
+            r.setParent(None)
+            r.deleteLater()
+        self._rows.clear()
+
+        sorted_stops = sorted(stops, key=lambda s: float(s.get("pos", 0.0)))
+        can_del = len(sorted_stops) > 2
+
+        for item in sorted_stops:
+            row = GradientStopRow(item.get("pos", 0.0), item.get("color", "#FFFFFF"), can_delete=can_del, parent=self.stops_container)
+            row.changed.connect(self._on_row_changed)
+            row.deleteRequested.connect(lambda r=row: self._delete_row(r))
+            self.stops_layout.addWidget(row)
+            self._rows.append(row)
+
+        self._update_preview()
+        self.gradientChanged.emit()
+
+    def get_stops(self) -> List[Dict[str, Any]]:
+        raw = [r.get_data() for r in self._rows]
+        return sorted(raw, key=lambda s: s["pos"])
+
+    def _on_row_changed(self):
+        self._update_preview()
+        self.gradientChanged.emit()
+
+    def _update_preview(self):
+        stops = self.get_stops()
+        self.preview_bar.set_stops(stops)
+        can_del = len(self._rows) > 2
+        for r in self._rows:
+            r.btn_delete.setEnabled(can_del)
+
+    def _add_stop_clicked(self):
+        current_stops = self.get_stops()
+        if len(current_stops) >= 8:
+            return
+        new_pos = 0.5
+        if len(current_stops) >= 2:
+            new_pos = (current_stops[-2]["pos"] + current_stops[-1]["pos"]) / 2.0
+        current_stops.append({"pos": new_pos, "color": "#00DFD8"})
+        self.set_stops(current_stops)
+
+    def _delete_row(self, row: GradientStopRow):
+        if len(self._rows) <= 2:
+            return
+        if row in self._rows:
+            self._rows.remove(row)
+            row.setParent(None)
+            row.deleteLater()
+            self._update_preview()
+            self.gradientChanged.emit()
 
 
 class CustomTitleBar(QWidget):
@@ -272,6 +500,7 @@ class SettingsDialog(QDialog):
 
         self._sidebar_items = [
             ("appearance", "Appearance"),
+            ("visualizer", "Visualizer"),
             ("typography", "Typography"),
             ("behavior", "Behavior && Source"),
             ("animations", "Animations"),
@@ -325,6 +554,10 @@ class SettingsDialog(QDialog):
         self.appearance_page = QWidget()
         self._init_appearance_page()
         self.pages_stack.addWidget(self._wrap_in_scroll_area(self.appearance_page))
+
+        self.visualizer_page = QWidget()
+        self._init_visualizer_page()
+        self.pages_stack.addWidget(self._wrap_in_scroll_area(self.visualizer_page))
 
         self.typography_page = QWidget()
         self._init_typography_page()
@@ -447,7 +680,208 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(effects_group)
 
-    # --- Page 1: Typography ---
+    # --- Page 1: Visualizer Studio ---
+    def _init_visualizer_page(self):
+        layout = QVBoxLayout(self.visualizer_page)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
+
+        # 1. Style & Shape
+        style_group = QGroupBox("Visualizer Style && Shape", self.visualizer_page)
+        style_form = QFormLayout(style_group)
+
+        self.vis_enable_switch = ToggleSwitch("Enable Floating Visualizer Window", self)
+        self.vis_enable_switch.toggled.connect(self._on_control_changed)
+        style_form.addRow("", self.vis_enable_switch)
+
+        self.vis_style_combo = QComboBox(self)
+        self.vis_style_combo.addItems(["Pill Bars", "Standard Bars"])
+        self.vis_style_combo.currentTextChanged.connect(self._on_control_changed)
+        style_form.addRow("Visualizer Style:", self.vis_style_combo)
+
+        self.vis_shape_combo = QComboBox(self)
+        self.vis_shape_combo.addItems(["Pill", "Rounded Bar", "Square Bar"])
+        self.vis_shape_combo.currentTextChanged.connect(self._on_vis_shape_changed)
+        style_form.addRow("Element Shape:", self.vis_shape_combo)
+
+        self.vis_corner_radius_slider = ValueSlider(0, 20, 4, " px", self)
+        self.vis_corner_radius_slider.valueChanged.connect(self._on_control_changed)
+        self.vis_corner_radius_row_label = QLabel("Corner Radius:", self)
+        style_form.addRow(self.vis_corner_radius_row_label, self.vis_corner_radius_slider)
+
+        layout.addWidget(style_group)
+
+        # 2. Live Visualizer Preview Canvas
+        preview_card = QGroupBox("Live Visualizer Preview", self.visualizer_page)
+        preview_card_layout = QVBoxLayout(preview_card)
+        preview_card_layout.setContentsMargins(8, 8, 8, 8)
+        self.vis_preview = VisualizerPreviewWidget(preview_card)
+        preview_card_layout.addWidget(self.vis_preview)
+        layout.addWidget(preview_card)
+
+        # 3. Color & Gradients
+        color_group = QGroupBox("Color && Multi-Stop Gradients", self.visualizer_page)
+        color_form = QFormLayout(color_group)
+
+        self.vis_color_mode_combo = QComboBox(self)
+        self.vis_color_mode_combo.addItems(["Solid", "Gradient", "Active Lyric Color"])
+        self.vis_color_mode_combo.currentTextChanged.connect(self._on_vis_color_mode_changed)
+        color_form.addRow("Color Mode:", self.vis_color_mode_combo)
+
+        self.btn_vis_color = ColorSwatchButton("#FFFFFF", self)
+        self.btn_vis_color.colorChanged.connect(self._on_vis_color_changed)
+        self.vis_solid_color_label = QLabel("Solid Bar Color:", self)
+        color_form.addRow(self.vis_solid_color_label, self.btn_vis_color)
+
+        self.vis_grad_dir_combo = QComboBox(self)
+        self.vis_grad_dir_combo.addItems(["Follow Visualizer", "Fixed Horizontal", "Fixed Vertical", "Reverse"])
+        self.vis_grad_dir_combo.currentTextChanged.connect(self._on_control_changed)
+        self.vis_grad_dir_label = QLabel("Gradient Direction:", self)
+        color_form.addRow(self.vis_grad_dir_label, self.vis_grad_dir_combo)
+
+        self.gradient_editor = GradientEditorCard(self.visualizer_page)
+        self.gradient_editor.gradientChanged.connect(self._on_control_changed)
+        color_form.addRow(self.gradient_editor)
+
+        layout.addWidget(color_group)
+
+        # 4. Dimensions & Bar Density
+        size_group = QGroupBox("Dimensions && Bar Density", self.visualizer_page)
+        size_form = QFormLayout(size_group)
+
+        self.vis_width_slider = ValueSlider(80, 1000, 320, " px", self)
+        self.vis_width_slider.valueChanged.connect(self._on_control_changed)
+        size_form.addRow("Logical Length:", self.vis_width_slider)
+
+        self.vis_height_slider = ValueSlider(24, 250, 64, " px", self)
+        self.vis_height_slider.valueChanged.connect(self._on_control_changed)
+        size_form.addRow("Logical Thickness:", self.vis_height_slider)
+
+        self.vis_bar_width_slider = ValueSlider(1, 30, 4, " px", self)
+        self.vis_bar_width_slider.valueChanged.connect(self._on_control_changed)
+        size_form.addRow("Bar / Pill Width:", self.vis_bar_width_slider)
+
+        self.vis_bar_spacing_slider = ValueSlider(0, 20, 3, " px", self)
+        self.vis_bar_spacing_slider.valueChanged.connect(self._on_control_changed)
+        size_form.addRow("Bar Spacing:", self.vis_bar_spacing_slider)
+
+        self.vis_max_height_slider = ValueSlider(20, 100, 100, "%", self)
+        self.vis_max_height_slider.valueChanged.connect(self._on_control_changed)
+        size_form.addRow("Max Bar Height:", self.vis_max_height_slider)
+
+        self.vis_auto_bar_switch = ToggleSwitch("Automatic Bar Count (adapts density to window length)", self)
+        self.vis_auto_bar_switch.toggled.connect(self._on_vis_auto_bar_toggled)
+        size_form.addRow("", self.vis_auto_bar_switch)
+
+        self.vis_manual_bar_slider = ValueSlider(4, 128, 32, " bars", self)
+        self.vis_manual_bar_slider.valueChanged.connect(self._on_control_changed)
+        self.vis_manual_bar_label = QLabel("Exact Bar Count:", self)
+        size_form.addRow(self.vis_manual_bar_label, self.vis_manual_bar_slider)
+
+        layout.addWidget(size_group)
+
+        # 5. Position Presets
+        pos_group = QGroupBox("Position && Edge Attachment", self.visualizer_page)
+        pos_layout = QVBoxLayout(pos_group)
+
+        pos_btn_layout = QHBoxLayout()
+        for preset in ["Free", "Top", "Bottom", "Left", "Right"]:
+            btn = QPushButton(preset, self)
+            btn.setObjectName("btn_ghost" if preset != "Bottom" else "btn_secondary")
+            btn.clicked.connect(lambda _, p=preset: self._on_vis_preset_clicked(p))
+            pos_btn_layout.addWidget(btn)
+        pos_layout.addLayout(pos_btn_layout)
+
+        pos_form = QFormLayout()
+        self.vis_orientation_combo = QComboBox(self)
+        self.vis_orientation_combo.addItems(["Bottom", "Top", "Left", "Right", "Free"])
+        self.vis_orientation_combo.currentTextChanged.connect(self._on_vis_orientation_changed)
+        pos_form.addRow("Current Orientation Preset:", self.vis_orientation_combo)
+        pos_layout.addLayout(pos_form)
+        layout.addWidget(pos_group)
+
+        # 6. Behavior & Dynamics
+        vis_beh_group = QGroupBox("Behavior && Window Dynamics", self.visualizer_page)
+        vis_beh_form = QFormLayout(vis_beh_group)
+
+        self.vis_opacity_slider = ValueSlider(10, 100, 100, "%", self)
+        self.vis_opacity_slider.valueChanged.connect(self._on_control_changed)
+        vis_beh_form.addRow("Overall Visualizer Opacity:", self.vis_opacity_slider)
+
+        self.vis_sensitivity_slider = ValueSlider(10, 200, 100, "%", self)
+        self.vis_sensitivity_slider.valueChanged.connect(self._on_control_changed)
+        vis_beh_form.addRow("Audio Sensitivity:", self.vis_sensitivity_slider)
+
+        self.vis_smoothing_slider = ValueSlider(10, 95, 75, "%", self)
+        self.vis_smoothing_slider.valueChanged.connect(self._on_control_changed)
+        vis_beh_form.addRow("Animation Smoothing:", self.vis_smoothing_slider)
+
+        self.vis_click_through_switch = ToggleSwitch("Click-Through Mode (Mouse clicks pass through)", self)
+        self.vis_click_through_switch.toggled.connect(self._on_control_changed)
+        vis_beh_form.addRow("", self.vis_click_through_switch)
+
+        self.vis_top_switch = ToggleSwitch("Keep Visualizer Always on Top", self)
+        self.vis_top_switch.toggled.connect(self._on_control_changed)
+        vis_beh_form.addRow("", self.vis_top_switch)
+
+        self.vis_exclude_capture_switch = ToggleSwitch("Exclude Visualizer from OBS / Discord Screen Capture", self)
+        self.vis_exclude_capture_switch.toggled.connect(self._on_control_changed)
+        vis_beh_form.addRow("", self.vis_exclude_capture_switch)
+        layout.addWidget(vis_beh_group)
+
+        # 7. Reset Visualizer Settings
+        reset_layout = QHBoxLayout()
+        reset_layout.addStretch(1)
+        self.btn_reset_vis = QPushButton("Reset Visualizer Settings", self)
+        self.btn_reset_vis.setObjectName("btn_secondary")
+        self.btn_reset_vis.setIcon(get_icon("refresh", color=PALETTE.text_secondary))
+        self.btn_reset_vis.clicked.connect(self._on_reset_visualizer_clicked)
+        reset_layout.addWidget(self.btn_reset_vis)
+        layout.addLayout(reset_layout)
+
+    def _on_vis_shape_changed(self, shape_text: str):
+        is_rounded = shape_text == "Rounded Bar"
+        self.vis_corner_radius_slider.setVisible(is_rounded)
+        self.vis_corner_radius_row_label.setVisible(is_rounded)
+        self._on_control_changed()
+
+    def _on_vis_color_mode_changed(self, mode_text: str):
+        is_solid = mode_text == "Solid"
+        is_grad = mode_text == "Gradient"
+        self.btn_vis_color.setVisible(is_solid)
+        self.vis_solid_color_label.setVisible(is_solid)
+        self.gradient_editor.setVisible(is_grad)
+        self.vis_grad_dir_combo.setVisible(is_grad)
+        self.vis_grad_dir_label.setVisible(is_grad)
+        self._on_control_changed()
+
+    def _on_vis_auto_bar_toggled(self, checked: bool):
+        self.vis_manual_bar_slider.setEnabled(not checked)
+        self.vis_manual_bar_label.setEnabled(not checked)
+        self._on_control_changed()
+
+    def _on_vis_preset_clicked(self, preset: str):
+        self.vis_orientation_combo.setCurrentText(preset)
+        parent_widget = self.parent()
+        if parent_widget and hasattr(parent_widget, 'visualizer_manager'):
+            parent_widget.visualizer_manager.set_preset_position(preset)
+            self._on_control_changed()
+
+    def _on_vis_orientation_changed(self, text: str):
+        self._on_control_changed()
+
+    def _on_vis_color_changed(self, color_hex: str):
+        self.working_settings["visualizer_color"] = color_hex
+        self._on_control_changed()
+
+    def _on_reset_visualizer_clicked(self):
+        defaults = self.settings_manager.reset_visualizer_settings()
+        self.working_settings.update(defaults)
+        self._load_current_values()
+        self._on_control_changed()
+        AppLogger.instance().log("🔄 [Visualizer] Visualizer settings reset to defaults.", force=True)
+
+    # --- Page 2: Typography ---
     def _init_typography_page(self):
         layout = QVBoxLayout(self.typography_page)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -564,7 +998,11 @@ class SettingsDialog(QDialog):
 
         self.keycap_toggle = KeycapWidget("Ctrl+H", self)
         self.keycap_toggle.keySequenceChanged.connect(self._on_control_changed)
-        form.addRow("Toggle Overlay Visibility:", self.keycap_toggle)
+        form.addRow("Toggle Lyrics Visibility:", self.keycap_toggle)
+
+        self.keycap_vis_toggle = KeycapWidget("Ctrl+Shift+V", self)
+        self.keycap_vis_toggle.keySequenceChanged.connect(self._on_control_changed)
+        form.addRow("Toggle Visualizer Visibility:", self.keycap_vis_toggle)
 
         self.keycap_refresh = KeycapWidget("Ctrl+R", self)
         self.keycap_refresh.keySequenceChanged.connect(self._on_control_changed)
@@ -829,6 +1267,14 @@ class SettingsDialog(QDialog):
 
     def _on_control_changed(self):
         self._update_preview()
+        if not getattr(self, '_is_initializing', False):
+            s = self._gather_settings()
+            self.working_settings.update(s)
+            parent_widget = self.parent()
+            if parent_widget and hasattr(parent_widget, 'visualizer_manager'):
+                parent_widget.visualizer_manager.apply_settings(s)
+            if hasattr(self, 'vis_preview'):
+                self.vis_preview.update_style(s)
 
     def _load_current_values(self):
         s = self.working_settings
@@ -859,16 +1305,61 @@ class SettingsDialog(QDialog):
         self.exclude_capture_switch.setChecked_silent(s.get("exclude_from_capture", False))
         self.auto_hide_switch.setChecked_silent(s.get("auto_hide_on_pause", False))
         self.auto_resize_switch.setChecked_silent(s.get("auto_resize_height", True))
-        self.snap_corners_switch.setChecked_silent(s.get("snap_to_corners", False))
+        self.snap_corners_switch.setChecked_silent(s.get("snap_to_corners", True))
 
         self.context_lines_slider.setValue(s.get("context_lines", 2))
         self.sync_offset_slider.setValue(s.get("sync_offset_ms", 0))
         self.anim_speed_slider.setValue(s.get("animation_speed_ms", 400))
 
         self.keycap_toggle.setKeySequence(QKeySequence(s.get("shortcut_toggle_overlay", "Ctrl+H")))
+        self.keycap_vis_toggle.setKeySequence(QKeySequence(s.get("shortcut_toggle_visualizer", "Ctrl+Shift+V")))
         self.keycap_refresh.setKeySequence(QKeySequence(s.get("shortcut_refresh", "Ctrl+R")))
         self.keycap_minus.setKeySequence(QKeySequence(s.get("shortcut_nudge_minus", "Ctrl+Left")))
         self.keycap_plus.setKeySequence(QKeySequence(s.get("shortcut_nudge_plus", "Ctrl+Right")))
+
+        # Visualizer Studio settings loading
+        self.vis_enable_switch.setChecked_silent(s.get("visualizer_enabled", True))
+        self.vis_style_combo.setCurrentText(s.get("visualizer_style", "Pill Bars"))
+
+        shape = s.get("visualizer_shape", "Pill")
+        self.vis_shape_combo.setCurrentText(shape)
+        self.vis_corner_radius_slider.setValue(s.get("visualizer_corner_radius", 4))
+        self._on_vis_shape_changed(shape)
+
+        self.vis_orientation_combo.setCurrentText(s.get("visualizer_orientation", "Bottom").capitalize())
+        self.vis_width_slider.setValue(s.get("visualizer_width", 320))
+        self.vis_height_slider.setValue(s.get("visualizer_height", 64))
+        self.vis_bar_width_slider.setValue(s.get("visualizer_bar_width", 4))
+        self.vis_bar_spacing_slider.setValue(s.get("visualizer_bar_spacing", 3))
+        self.vis_max_height_slider.setValue(s.get("visualizer_max_height", 100))
+
+        auto_bars = s.get("visualizer_auto_bar_count", True)
+        self.vis_auto_bar_switch.setChecked_silent(auto_bars)
+        self.vis_manual_bar_slider.setValue(s.get("visualizer_bar_count", 32))
+        self._on_vis_auto_bar_toggled(auto_bars)
+
+        color_mode = s.get("visualizer_color_mode", "Solid")
+        self.vis_color_mode_combo.setCurrentText(color_mode)
+        self.btn_vis_color.setColor(s.get("visualizer_color", "#FFFFFF"))
+
+        stops = s.get("visualizer_gradient_stops", [
+            {"pos": 0.0, "color": "#FF4D8D"},
+            {"pos": 0.5, "color": "#8B5CF6"},
+            {"pos": 1.0, "color": "#3B82F6"}
+        ])
+        self.gradient_editor.set_stops(stops)
+        self.vis_grad_dir_combo.setCurrentText(s.get("visualizer_gradient_direction", "Follow Visualizer"))
+        self._on_vis_color_mode_changed(color_mode)
+
+        self.vis_opacity_slider.setValue(s.get("visualizer_opacity", 100))
+        self.vis_sensitivity_slider.setValue(s.get("visualizer_sensitivity", 100))
+        self.vis_smoothing_slider.setValue(s.get("visualizer_smoothing", 75))
+        self.vis_click_through_switch.setChecked_silent(s.get("visualizer_click_through", False))
+        self.vis_top_switch.setChecked_silent(s.get("visualizer_always_on_top", True))
+        self.vis_exclude_capture_switch.setChecked_silent(s.get("visualizer_exclude_from_capture", False))
+
+        if hasattr(self, 'vis_preview'):
+            self.vis_preview.update_style(s)
 
         self._refresh_media_sources()
 
@@ -886,6 +1377,9 @@ class SettingsDialog(QDialog):
         border_css = f"border: 1px solid {PALETTE.border};" if s.get("border_enabled") else "border: none;"
         self.preview_container.setStyleSheet(f"background-color: {rgba_str}; border-radius: 8px; {border_css}")
         self.preview_renderer.update_style(s)
+
+        if hasattr(self, 'vis_preview'):
+            self.vis_preview.update_style(s)
 
         # Update Now Playing pill title
         parent_widget = self.parent()
@@ -924,15 +1418,42 @@ class SettingsDialog(QDialog):
             "sync_offset_ms": self.sync_offset_slider.value(),
             "animation_speed_ms": self.anim_speed_slider.value(),
             "shortcut_toggle_overlay": self.keycap_toggle.keySequence().toString(),
+            "shortcut_toggle_visualizer": self.keycap_vis_toggle.keySequence().toString(),
             "shortcut_refresh": self.keycap_refresh.keySequence().toString(),
             "shortcut_nudge_minus": self.keycap_minus.keySequence().toString(),
             "shortcut_nudge_plus": self.keycap_plus.keySequence().toString(),
+
+            # Standalone Visualizer settings
+            "visualizer_enabled": self.vis_enable_switch.isChecked(),
+            "visualizer_style": self.vis_style_combo.currentText(),
+            "visualizer_shape": self.vis_shape_combo.currentText(),
+            "visualizer_corner_radius": self.vis_corner_radius_slider.value(),
+            "visualizer_auto_bar_count": self.vis_auto_bar_switch.isChecked(),
+            "visualizer_bar_count": self.vis_manual_bar_slider.value(),
+            "visualizer_orientation": self.vis_orientation_combo.currentText().upper(),
+            "visualizer_snap_edge": self.vis_orientation_combo.currentText().upper() if self.vis_orientation_combo.currentText() != "Free" else "NONE",
+            "visualizer_width": self.vis_width_slider.value(),
+            "visualizer_height": self.vis_height_slider.value(),
+            "visualizer_opacity": self.vis_opacity_slider.value(),
+            "visualizer_color": self.btn_vis_color.color(),
+            "visualizer_color_mode": self.vis_color_mode_combo.currentText(),
+            "visualizer_gradient_stops": self.gradient_editor.get_stops(),
+            "visualizer_gradient_direction": self.vis_grad_dir_combo.currentText(),
+            "visualizer_bar_width": self.vis_bar_width_slider.value(),
+            "visualizer_bar_spacing": self.vis_bar_spacing_slider.value(),
+            "visualizer_max_height": self.vis_max_height_slider.value(),
+            "visualizer_sensitivity": self.vis_sensitivity_slider.value(),
+            "visualizer_smoothing": self.vis_smoothing_slider.value(),
+            "visualizer_click_through": self.vis_click_through_switch.isChecked(),
+            "visualizer_always_on_top": self.vis_top_switch.isChecked(),
+            "visualizer_exclude_from_capture": self.vis_exclude_capture_switch.isChecked(),
         }
 
     def _on_apply(self):
         new_settings = self._gather_settings()
         shortcuts = [
             new_settings.get("shortcut_toggle_overlay"),
+            new_settings.get("shortcut_toggle_visualizer"),
             new_settings.get("shortcut_refresh"),
             new_settings.get("shortcut_nudge_minus"),
             new_settings.get("shortcut_nudge_plus"),
@@ -1011,9 +1532,29 @@ class SettingsDialog(QDialog):
             f"Cached Songs (Disk): {cached_count} files",
             f"Recent Log Buffer Size: {len(AppLogger.instance().history)} entries",
             "==================================================",
-            "Recent Log History:",
+            " Visualizer & Audio DSP Engine:",
             "==================================================",
         ]
+
+        parent_widget = self.parent()
+        vis_diag = {}
+        if parent_widget and hasattr(parent_widget, 'visualizer_manager'):
+            vis_diag = parent_widget.visualizer_manager.get_audio_diagnostics()
+
+        diag.extend([
+            f"Visualizer Enabled: {self.working_settings.get('visualizer_enabled', True)}",
+            f"Visualizer Style: {vis_diag.get('active_style', 'Bars')}",
+            f"Audio Capture Source: {vis_diag.get('source_type', 'WASAPI Loopback' if sys.platform == 'win32' else 'Linux Loopback')}",
+            f"Audio Stream Capturing: {vis_diag.get('is_capturing', False)}",
+            f"Audio Sample Rate: {vis_diag.get('sample_rate', 48000)} Hz",
+            f"FFT Analysis Window: {vis_diag.get('fft_size', 2048)} samples (~42.6 ms)",
+            f"Frequency Resolution: 25 Hz - 16000 Hz ({vis_diag.get('bar_count', 32)} Log Bands)",
+            f"Live Audio RMS Level: {vis_diag.get('rms', 0.0):.4f}",
+            f"Live Audio Peak Level: {vis_diag.get('peak', 0.0):.4f}",
+            "==================================================",
+            "Recent Log History:",
+            "==================================================",
+        ])
         for ts, msg in list(AppLogger.instance().history)[-25:]:
             diag.append(f"[{ts}] {msg}")
 

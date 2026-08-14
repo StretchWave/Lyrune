@@ -21,6 +21,8 @@ from lyrune.settings_dialog import SettingsDialog
 from lyrune.logger import log_event
 from lyrune.animation_engine import LyricsRenderer
 from lyrune.ui_theme import get_icon, get_app_icon, MENU_STYLESHEET
+from lyrune.visualizer import VisualizerManager
+from lyrune.window_utils import calculate_edge_snap, constrain_to_work_area, get_screen_for_rect
 
 
 class LyricsWidget(QWidget):
@@ -49,6 +51,9 @@ class LyricsWidget(QWidget):
         self.player = SpotifyPlayer()
         self.lrclib = LRCLibClient()
         self.parser = LRCParser()
+
+        # Standalone Visualizer Subsystem (independent floating window & pipeline)
+        self.visualizer_manager = VisualizerManager(self.settings_mgr, self.player)
 
         # Set app-wide icon (taskbar + all windows)
         app = QApplication.instance()
@@ -139,6 +144,10 @@ class LyricsWidget(QWidget):
         self._shortcut_toggle.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._shortcut_toggle.activated.connect(self._toggle_widget_visibility)
 
+        self._shortcut_vis_toggle = QShortcut(self)
+        self._shortcut_vis_toggle.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._shortcut_vis_toggle.activated.connect(self.visualizer_manager.toggle_visibility)
+
         self._sc_nudge_minus = QShortcut(self)
         self._sc_nudge_minus.activated.connect(lambda: self._nudge_sync_offset(-250))
 
@@ -156,12 +165,15 @@ class LyricsWidget(QWidget):
     def _update_shortcuts_from_settings(self, s: dict):
         """Updates QShortcut key sequences dynamically from settings dictionary."""
         key_toggle = s.get("shortcut_toggle_overlay", "Ctrl+H")
+        key_vis_toggle = s.get("shortcut_toggle_visualizer", "Ctrl+Shift+V")
         key_refresh = s.get("shortcut_refresh", "Ctrl+R")
         key_minus = s.get("shortcut_nudge_minus", "Ctrl+Left")
         key_plus = s.get("shortcut_nudge_plus", "Ctrl+Right")
 
         if key_toggle:
             self._shortcut_toggle.setKey(QKeySequence(key_toggle))
+        if key_vis_toggle:
+            self._shortcut_vis_toggle.setKey(QKeySequence(key_vis_toggle))
         if key_refresh:
             self._sc_refresh.setKey(QKeySequence(key_refresh))
         if key_minus:
@@ -267,6 +279,45 @@ class LyricsWidget(QWidget):
 
         self.tray_menu.addSeparator()
 
+        # Standalone Visualizer Submenu
+        self.vis_menu = QMenu("Visualizer", self.tray_menu)
+        self.vis_menu.setIcon(get_icon("visualizer"))
+        self.vis_menu.setStyleSheet(MENU_STYLESHEET)
+
+        self.action_vis_enable = QAction("Enable Visualizer", self)
+        self.action_vis_enable.setCheckable(True)
+        self.action_vis_enable.setChecked(self.settings_mgr.get("visualizer_enabled", True))
+        self.action_vis_enable.triggered.connect(self._toggle_visualizer_enabled_from_tray)
+        self.vis_menu.addAction(self.action_vis_enable)
+
+        self.vis_menu.addSeparator()
+
+        self.vis_pos_menu = QMenu("Position", self.vis_menu)
+        self.vis_pos_menu.setStyleSheet(MENU_STYLESHEET)
+        for preset in ["Free", "Top", "Bottom", "Left", "Right"]:
+            act = QAction(preset, self.vis_pos_menu)
+            act.triggered.connect(lambda _, p=preset: self.visualizer_manager.set_preset_position(p))
+            self.vis_pos_menu.addAction(act)
+        self.vis_menu.addMenu(self.vis_pos_menu)
+
+        self.vis_menu.addSeparator()
+
+        self.action_vis_top = QAction("Always on Top", self)
+        self.action_vis_top.setCheckable(True)
+        self.action_vis_top.setChecked(self.settings_mgr.get("visualizer_always_on_top", True))
+        self.action_vis_top.triggered.connect(self._toggle_visualizer_top_from_tray)
+        self.vis_menu.addAction(self.action_vis_top)
+
+        self.action_vis_click_through = QAction("Click-Through Mode", self)
+        self.action_vis_click_through.setCheckable(True)
+        self.action_vis_click_through.setChecked(self.settings_mgr.get("visualizer_click_through", False))
+        self.action_vis_click_through.triggered.connect(self._toggle_visualizer_click_through_from_tray)
+        self.vis_menu.addAction(self.action_vis_click_through)
+
+        self.tray_menu.addMenu(self.vis_menu)
+
+        self.tray_menu.addSeparator()
+
         self.action_exit = QAction(get_icon("exit"), "Exit", self)
         self.action_exit.triggered.connect(self._quit_application)
         self.tray_menu.addAction(self.action_exit)
@@ -341,12 +392,27 @@ class LyricsWidget(QWidget):
         if abs(self.height() - target_h) > 4:
             self.resize(self.width(), target_h)
 
+    def _toggle_visualizer_enabled_from_tray(self, checked: bool):
+        self.settings_mgr.set("visualizer_enabled", checked)
+        self.visualizer_manager.apply_settings(self.settings_mgr.settings)
+
+    def _toggle_visualizer_top_from_tray(self, checked: bool):
+        self.settings_mgr.set("visualizer_always_on_top", checked)
+        self.visualizer_manager.apply_settings(self.settings_mgr.settings)
+
+    def _toggle_visualizer_click_through_from_tray(self, checked: bool):
+        self.settings_mgr.set("visualizer_click_through", checked)
+        self.visualizer_manager.apply_settings(self.settings_mgr.settings)
+
     def _quit_application(self):
         """Safely stops worker thread, animations, and exits application."""
         pos = self.pos()
         self.settings_mgr.settings["window_x"] = pos.x()
         self.settings_mgr.settings["window_y"] = pos.y()
         self.settings_mgr.save_immediate()
+
+        if hasattr(self, 'visualizer_manager'):
+            self.visualizer_manager.shutdown()
 
         if hasattr(self, 'renderer'):
             self.renderer.stop_all()
@@ -373,6 +439,9 @@ class LyricsWidget(QWidget):
         self.settings_mgr.settings["window_x"] = pos.x()
         self.settings_mgr.settings["window_y"] = pos.y()
         self.settings_mgr.save_immediate()
+
+        if hasattr(self, 'visualizer_manager'):
+            self.visualizer_manager.shutdown()
 
         if hasattr(self, 'player'):
             self.player.stop_worker_thread()
@@ -457,6 +526,16 @@ class LyricsWidget(QWidget):
         # Update shortcuts dynamically
         self._update_shortcuts_from_settings(s)
 
+        # Update visualizer subsystem
+        if hasattr(self, 'visualizer_manager'):
+            self.visualizer_manager.apply_settings(s)
+            if hasattr(self, 'action_vis_enable'):
+                self.action_vis_enable.setChecked(s.get("visualizer_enabled", True))
+            if hasattr(self, 'action_vis_top'):
+                self.action_vis_top.setChecked(s.get("visualizer_always_on_top", True))
+            if hasattr(self, 'action_vis_click_through'):
+                self.action_vis_click_through.setChecked(s.get("visualizer_click_through", False))
+
     def _update_widget_border(self, bg_rgba: Optional[str] = None, border: bool = False):
         """Sets the translucent background via a *constant* stylesheet.
 
@@ -498,6 +577,10 @@ class LyricsWidget(QWidget):
             return
 
         info = self.player.get_playback_info()
+
+        # Propagate live playback state to standalone visualizer
+        if hasattr(self, 'visualizer_manager'):
+            self.visualizer_manager.update_playback_state(info)
 
         if not info['is_running'] or not info['title']:
             self.renderer.set_status("Waiting for Spotify...")
@@ -741,8 +824,8 @@ class LyricsWidget(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._is_dragging:
                 self._is_dragging = False
-                # Snap to corner if enabled and near a screen edge
-                if self.settings_mgr.get("snap_to_corners", False):
+                # Snap to border if enabled and near a screen edge
+                if self.settings_mgr.get("snap_to_corners", True):
                     self._snap_to_nearest_corner()
                 # Save position after drag
                 pos = self.pos()
@@ -753,40 +836,13 @@ class LyricsWidget(QWidget):
 
     def _snap_to_nearest_corner(self):
         """Snap the overlay to screen borders (sides, top, bottom, and corners) if within threshold."""
-        screen = QApplication.screenAt(self.pos())
-        if not screen:
-            screen = QApplication.primaryScreen()
-        geo = screen.availableGeometry()
-        pos = self.pos()
-        w, h = self.width(), self.height()
-        threshold = 50
-
-        near_left = (pos.x() - geo.left()) < threshold
-        near_right = ((geo.left() + geo.width()) - (pos.x() + w)) < threshold
-        near_top = (pos.y() - geo.top()) < threshold
-        near_bottom = ((geo.top() + geo.height()) - (pos.y() + h)) < threshold
-
-        # Only snap if near at least one screen border
-        if not (near_left or near_right or near_top or near_bottom):
-            return
-
-        # Determine horizontal snap: left edge, right edge, or keep current X
-        if near_left:
-            snap_x = geo.left()
-        elif near_right:
-            snap_x = geo.left() + geo.width() - w
+        edge, snapped_pos = calculate_edge_snap(self.geometry(), threshold=60)
+        if edge:
+            self.move(snapped_pos)
+            log_event(f"🧲 [Lyrics Overlay] Snapped to {edge} border", force=True)
         else:
-            snap_x = pos.x()
-
-        # Determine vertical snap: top edge, bottom edge, or keep current Y
-        if near_top:
-            snap_y = geo.top()
-        elif near_bottom:
-            snap_y = geo.top() + geo.height() - h
-        else:
-            snap_y = pos.y()
-
-        self.move(int(snap_x), int(snap_y))
+            safe_pos = constrain_to_work_area(self.pos(), self.size())
+            self.move(safe_pos)
 
     def resizeEvent(self, event):
         """Debounced resize: saves dimensions after 500ms of no resize activity."""
