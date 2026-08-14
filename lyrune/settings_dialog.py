@@ -215,9 +215,10 @@ class SettingsDialog(QDialog):
     """
     settings_changed = pyqtSignal(dict)
 
-    def __init__(self, settings_manager: SettingsManager, parent: Optional[QWidget] = None):
+    def __init__(self, settings_manager: SettingsManager, player: Optional[Any] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.settings_manager = settings_manager
+        self.player = player or (getattr(parent, 'player', None) if parent else None)
         self.working_settings = dict(settings_manager.settings)
         self._is_initializing = True
         self._log_connected = False
@@ -413,7 +414,7 @@ class SettingsDialog(QDialog):
         effects_form.addRow("Background Opacity:", self.opacity_slider)
 
         self.active_opacity_slider = ValueSlider(10, 100, 100, "%", self)
-        self.active_opacity_slider.valueChanged.connect(self._on_control_changed)
+        self.active_opacity_slider.valueChanged.connect(self._on_active_opacity_changed)
         effects_form.addRow("Active Line Opacity:", self.active_opacity_slider)
 
         self.context_opacity_slider = ValueSlider(0, 100, 45, "%", self)
@@ -523,7 +524,7 @@ class SettingsDialog(QDialog):
         self.auto_resize_switch.toggled.connect(self._on_control_changed)
         form.addRow("", self.auto_resize_switch)
 
-        self.snap_corners_switch = ToggleSwitch("Snap to Screen Corners when Dragged Near Edges", self)
+        self.snap_corners_switch = ToggleSwitch("Snap to Screen Borders && Corners when Dragged Near Edges", self)
         self.snap_corners_switch.toggled.connect(self._on_control_changed)
         form.addRow("", self.snap_corners_switch)
 
@@ -757,14 +758,17 @@ class SettingsDialog(QDialog):
 
     # --- Data Loading & Event Handlers ---
     def _refresh_media_sources(self):
-        parent_widget = self.parent()
-        if not parent_widget or not hasattr(parent_widget, 'player'):
-            return
+        player = self.player or (getattr(self.parent(), 'player', None) if self.parent() else None)
+        if not player:
+            try:
+                from lyrune.spotify_player import SpotifyPlayer
+                player = SpotifyPlayer()
+            except Exception:
+                player = None
 
-        player = parent_widget.player
-        if hasattr(player, 'get_available_media_sources'):
+        if player and hasattr(player, 'get_available_media_sources'):
             sessions = player.get_available_media_sources()
-        elif hasattr(player, 'get_active_media_sessions'):
+        elif player and hasattr(player, 'get_active_media_sessions'):
             sessions = player.get_active_media_sessions()
         else:
             sessions = [{'name': "Auto-Detect Active Player", 'id': "Auto-Detect"}]
@@ -773,20 +777,24 @@ class SettingsDialog(QDialog):
 
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
-        self.source_combo.addItem(get_icon("auto_detect"), "Auto-Detect Active Player", "Auto-Detect")
 
         selected_index = 0
-        for idx, item in enumerate(sessions, start=1):
-            clean_name = item['name']
-            if "Spotify" in clean_name:
+        for idx, item in enumerate(sessions):
+            clean_name = item.get('name', 'Unknown')
+            target_id = item.get('id', clean_name)
+
+            lower_name = clean_name.lower()
+            lower_id = target_id.lower()
+
+            if "spotify" in lower_name or "spotify" in lower_id:
                 icon = get_icon("music")
-            elif any(b in clean_name for b in ["Browser", "Chrome", "Brave", "Edge", "Firefox", "Opera"]):
+            elif any(b in lower_name or b in lower_id for b in ["browser", "chrome", "brave", "edge", "firefox", "opera"]):
                 icon = get_icon("browser")
             else:
                 icon = get_icon("auto_detect")
 
-            self.source_combo.addItem(icon, clean_name, item['id'])
-            if item['id'] == selected_id or item['name'] == selected_id or clean_name == selected_id:
+            self.source_combo.addItem(icon, clean_name, target_id)
+            if target_id == selected_id or clean_name == selected_id:
                 selected_index = idx
 
         self.source_combo.setCurrentIndex(selected_index)
@@ -808,6 +816,15 @@ class SettingsDialog(QDialog):
         self.working_settings["text_color"] = self.btn_text_color.color()
         self.working_settings["bg_color"] = self.btn_bg_color.color()
         self.working_settings["shadow_color"] = self.btn_shadow_color.color()
+        self._update_preview()
+
+    def _on_active_opacity_changed(self, value: int):
+        if getattr(self, '_is_initializing', False):
+            return
+        if self.link_opacity_switch.isChecked():
+            # Scale context line opacity proportionally with active opacity
+            proportional_context = int(45 * (value / 100.0))
+            self.context_opacity_slider.setValue(max(0, min(100, proportional_context)))
         self._update_preview()
 
     def _on_control_changed(self):

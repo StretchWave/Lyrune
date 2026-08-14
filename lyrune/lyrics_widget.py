@@ -68,6 +68,7 @@ class LyricsWidget(QWidget):
         self._is_dragging: bool = False
         self._drag_pos: QPoint = QPoint()
         self._pending_target_h: Optional[int] = None  # deferred auto-resize while hovering/dragging
+        self._manually_hidden: bool = False
 
         # Async lyrics worker
         self._lyrics_worker: Optional[LyricsFetchWorker] = None
@@ -407,9 +408,14 @@ class LyricsWidget(QWidget):
             try:
                 import ctypes
                 hwnd = int(self.winId())
-                # WDA_EXCLUDEFROMCAPTURE = 0x00000011, WDA_NONE = 0x0
+                # WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Windows 10 2004+ / Windows 11)
+                # WDA_MONITOR = 0x00000001 (Windows 7/8/early 10)
+                # WDA_NONE = 0x0
                 affinity = 0x00000011 if exclude_capture else 0x0
-                ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, affinity)
+                res = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, affinity)
+                if not res and exclude_capture:
+                    # Fallback to WDA_MONITOR for older Windows builds
+                    ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000001)
             except Exception as e:
                 log_event(f"[DisplayAffinity Error] {e}")
 
@@ -495,6 +501,8 @@ class LyricsWidget(QWidget):
 
         if not info['is_running'] or not info['title']:
             self.renderer.set_status("Waiting for Spotify...")
+            if self.settings_mgr.get("auto_hide_on_pause", False) and self.isVisible():
+                self.hide()
             if self.current_track_id is not None:
                 self.current_track_id = None
                 self.current_song_title = ""
@@ -528,8 +536,8 @@ class LyricsWidget(QWidget):
                 self.hide()
             return
 
-        # If we were auto-hidden and playback resumed, show again
-        if self.settings_mgr.get("auto_hide_on_pause", False) and not self.isVisible():
+        # If we were auto-hidden and playback resumed, show again (unless user manually hid via shortcut/tray)
+        if self.settings_mgr.get("auto_hide_on_pause", False) and not self.isVisible() and not getattr(self, '_manually_hidden', False):
             self.show()
 
         # Check per-track offset first, fallback to global offset
@@ -538,10 +546,13 @@ class LyricsWidget(QWidget):
         adjusted_position = max(0.0, position + (sync_offset_ms / 1000.0))
 
         if self.parser.has_lyrics():
+            if not self.renderer._lines:
+                self.renderer.set_lines(self.parser.texts)
             active_idx = self.parser.get_current_index(adjusted_position)
             self.renderer.set_active_index(active_idx)
         elif self._unsynced_lyrics:
-            pass  # Already set in _on_lyrics_fetched
+            if not self.renderer._lines:
+                self.renderer.set_lines([l for l in self._unsynced_lyrics.split('\n') if l])
 
     def _on_song_changed(self, artist: str, title: str):
         """Triggers async lyrics fetch on song change with smooth fade transition."""
@@ -554,11 +565,7 @@ class LyricsWidget(QWidget):
         self._lyrics_fetch_failed = False
         self._lyrics_retry_timer.stop()
 
-        def _mid_transition():
-            self.renderer.set_status("Loading lyrics...")
-
-        self.renderer.fade_out_then(_mid_transition)
-
+        self.renderer.set_status("Loading lyrics...")
         self._start_lyrics_fetch(artist, title)
 
     def _start_lyrics_fetch(self, artist: str, title: str):
@@ -672,22 +679,25 @@ class LyricsWidget(QWidget):
 
     def _toggle_widget_visibility(self):
         if self.isVisible():
+            self._manually_hidden = True
             self.hide()
             self.action_visible.setText("Show Lyrics Overlay")
             self.action_visible.setIcon(get_icon("eye"))
         else:
+            self._manually_hidden = False
             self.show()
             self.action_visible.setText("Hide Lyrics Overlay")
             self.action_visible.setIcon(get_icon("eye_off"))
 
     def _open_settings(self):
         if self.settings_dialog is None:
-            self.settings_dialog = SettingsDialog(self.settings_mgr, parent=None)
+            self.settings_dialog = SettingsDialog(self.settings_mgr, player=self.player, parent=None)
             self.settings_dialog.settings_changed.connect(self._apply_settings)
             self.settings_dialog.show()
             self.settings_dialog.raise_()
             self.settings_dialog.activateWindow()
         else:
+            self.settings_dialog._refresh_media_sources()
             if self.settings_dialog.isMinimized():
                 self.settings_dialog.setWindowState(Qt.WindowState.WindowNoState)
             self.settings_dialog.show()
@@ -742,31 +752,39 @@ class LyricsWidget(QWidget):
         super().mouseReleaseEvent(event)
 
     def _snap_to_nearest_corner(self):
-        """Snap the overlay to the nearest screen corner if within threshold of any screen border."""
+        """Snap the overlay to screen borders (sides, top, bottom, and corners) if within threshold."""
         screen = QApplication.screenAt(self.pos())
         if not screen:
             screen = QApplication.primaryScreen()
         geo = screen.availableGeometry()
         pos = self.pos()
         w, h = self.width(), self.height()
-        threshold = 60
+        threshold = 50
 
         near_left = (pos.x() - geo.left()) < threshold
         near_right = ((geo.left() + geo.width()) - (pos.x() + w)) < threshold
         near_top = (pos.y() - geo.top()) < threshold
         near_bottom = ((geo.top() + geo.height()) - (pos.y() + h)) < threshold
 
-        # Only snap if near at least one border
+        # Only snap if near at least one screen border
         if not (near_left or near_right or near_top or near_bottom):
             return
 
-        center_x = geo.left() + geo.width() / 2.0
-        center_y = geo.top() + geo.height() / 2.0
-        widget_center_x = pos.x() + w / 2.0
-        widget_center_y = pos.y() + h / 2.0
+        # Determine horizontal snap: left edge, right edge, or keep current X
+        if near_left:
+            snap_x = geo.left()
+        elif near_right:
+            snap_x = geo.left() + geo.width() - w
+        else:
+            snap_x = pos.x()
 
-        snap_x = geo.left() if widget_center_x < center_x else (geo.left() + geo.width() - w)
-        snap_y = geo.top() if widget_center_y < center_y else (geo.top() + geo.height() - h)
+        # Determine vertical snap: top edge, bottom edge, or keep current Y
+        if near_top:
+            snap_y = geo.top()
+        elif near_bottom:
+            snap_y = geo.top() + geo.height() - h
+        else:
+            snap_y = pos.y()
 
         self.move(int(snap_x), int(snap_y))
 

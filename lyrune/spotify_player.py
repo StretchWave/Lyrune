@@ -243,33 +243,50 @@ class SpotifyPlayer:
         Enumerates all active media sessions (WinRT GSMTC) and visible media windows (win32gui).
         Returns a list of dicts: [{'name': Display Name, 'id': Target ID}]
         """
-        sources = [{'name': "✨ Auto-Detect (Active Session)", 'id': "Auto-Detect"}]
+        sources = [{'name': "Auto-Detect Active Player", 'id': "Auto-Detect"}]
 
         if not self._is_windows:
             return sources
 
         # 1. Scan WinRT GSMTC sessions (if manager is available)
-        if HAS_WINRT and hasattr(self, '_gsm_manager') and self._gsm_manager:
+        if HAS_WINRT:
             try:
-                sessions = self._gsm_manager.get_sessions()
-                for i, s in enumerate(sessions):
-                    app_id = getattr(s, 'source_app_user_model_id', '') or f"Session_{i}"
-                    lower_id = app_id.lower()
-                    display_name = app_id
-                    if 'spotify.exe' in lower_id or 'spotify' in lower_id:
-                        display_name = "Spotify Desktop App (Spotify.exe)"
-                    elif 'brave' in lower_id:
-                        display_name = "Brave Browser (Spotify Web)"
-                    elif 'chrome' in lower_id:
-                        display_name = "Google Chrome (Spotify Web)"
-                    elif 'edge' in lower_id:
-                        display_name = "Microsoft Edge (Spotify Web)"
-                    elif 'firefox' in lower_id:
-                        display_name = "Mozilla Firefox (Spotify Web)"
+                manager = getattr(self, '_gsm_manager', None)
+                if not manager:
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_closed():
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    manager = loop.run_until_complete(self._wmc.GlobalSystemMediaTransportControlsSessionManager.request_async())
+                    self._gsm_manager = manager
 
-                    target_id = app_id
-                    if not any(s['id'] == target_id for s in sources):
-                        sources.append({'name': f"🎵 {display_name}", 'id': target_id})
+                if manager:
+                    sessions = manager.get_sessions()
+                    for i, s in enumerate(sessions):
+                        app_id = getattr(s, 'source_app_user_model_id', '') or f"Session_{i}"
+                        lower_id = app_id.lower()
+                        display_name = app_id
+                        if 'spotify.exe' in lower_id or 'spotify' in lower_id:
+                            display_name = "Spotify Desktop App"
+                        elif 'brave' in lower_id:
+                            display_name = "Brave Browser"
+                        elif 'chrome' in lower_id:
+                            display_name = "Google Chrome"
+                        elif 'edge' in lower_id:
+                            display_name = "Microsoft Edge"
+                        elif 'firefox' in lower_id:
+                            display_name = "Mozilla Firefox"
+                        elif 'opera' in lower_id:
+                            display_name = "Opera Browser"
+
+                        target_id = app_id
+                        if not any(src['id'] == target_id for src in sources):
+                            sources.append({'name': display_name, 'id': target_id})
             except Exception as e:
                 log_event(f"[GSMTC Source Enumeration Error] {e}")
 
@@ -299,17 +316,17 @@ class SpotifyPlayer:
             for norm_t, lower_t in scanned_titles:
                 target_id = norm_t
                 if 'brave' in lower_t:
-                    name = f"🌐 Brave Browser — [{norm_t}]"
+                    name = f"Brave Browser - [{norm_t}]"
                 elif 'chrome' in lower_t:
-                    name = f"🌐 Chrome Browser — [{norm_t}]"
+                    name = f"Chrome Browser - [{norm_t}]"
                 elif 'edge' in lower_t:
-                    name = f"🌐 Edge Browser — [{norm_t}]"
+                    name = f"Edge Browser - [{norm_t}]"
                 elif 'firefox' in lower_t:
-                    name = f"🌐 Firefox Browser — [{norm_t}]"
+                    name = f"Firefox Browser - [{norm_t}]"
                 elif 'spotify' in lower_t:
-                    name = f"🎵 Spotify App — [{norm_t}]"
+                    name = f"Spotify App - [{norm_t}]"
                 else:
-                    name = f"🖥️ {norm_t}"
+                    name = norm_t
 
                 if not any(s['id'] == target_id or s['name'] == name for s in sources):
                     sources.append({'name': name, 'id': target_id})

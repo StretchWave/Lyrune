@@ -156,6 +156,11 @@ class LyricsRenderer(QWidget):
 
     def set_lines(self, lines: List[str]) -> None:
         """Set all lyric lines.  Called once when lyrics are fetched for a new song."""
+        self._fade_anim.stop()
+        try:
+            self._fade_anim.finished.disconnect()
+        except TypeError:
+            pass
         self._scroll_anim.stop()
         self._lines = lines
         self._status_message = ""
@@ -194,18 +199,20 @@ class LyricsRenderer(QWidget):
 
         self._fade_anim.setStartValue(self._fade_opacity)
         self._fade_anim.setEndValue(0.0)
-        self._fade_anim.setDuration(200)
+        self._fade_anim.setDuration(150)
 
         def _on_faded_out():
             try:
                 self._fade_anim.finished.disconnect(_on_faded_out)
             except TypeError:
                 pass
-            callback()
+            # Only trigger callback if no lines have been populated by an incoming fetch
+            if not self._lines:
+                callback()
             # Fade back in
             self._fade_anim.setStartValue(0.0)
             self._fade_anim.setEndValue(1.0)
-            self._fade_anim.setDuration(350)
+            self._fade_anim.setDuration(250)
             self._fade_anim.start()
 
         self._fade_anim.finished.connect(_on_faded_out)
@@ -422,15 +429,19 @@ class LyricsRenderer(QWidget):
                      | int(Qt.TextFlag.TextWordWrap))
 
             # ── High Contrast Shadow / Outline ──
-            if is_active and self._shadow_enabled and active_outline:
+            if is_active and (active_outline or self._shadow_enabled):
                 shadow_blur = getattr(self, '_shadow_blur', 8)
                 outline_offset = max(1, shadow_blur // 4)
-                painter.setOpacity(opacity * 0.50)
+                painter.setOpacity(opacity * 0.55)
                 sh_color = self._shadow_color if not is_adaptive else (QColor("#FFFFFF") if text_col.lightness() < 128 else QColor("#000000"))
                 painter.setPen(sh_color)
-                # Multi-direction shadow stroke — offset scales with shadow_blur
-                for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1), (0, outline_offset), (outline_offset, 0), (-outline_offset, 0), (0, -outline_offset)):
-                    painter.drawText(text_rect.adjusted(dx, dy, dx, dy), flags, text)
+                if active_outline:
+                    # Multi-direction high-contrast contour stroke
+                    for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1), (0, outline_offset), (outline_offset, 0), (-outline_offset, 0), (0, -outline_offset)):
+                        painter.drawText(text_rect.adjusted(dx, dy, dx, dy), flags, text)
+                elif self._shadow_enabled:
+                    # Directional drop shadow
+                    painter.drawText(text_rect.adjusted(0, outline_offset, 0, outline_offset), flags, text)
 
             # ── Main text ──
             painter.setOpacity(opacity)
