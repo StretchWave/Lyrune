@@ -694,6 +694,68 @@ class SpotifyPlayer:
 
     # ─── Linux Backends ─────────────────────────────────────────────────
 
+    # Priority order for MPRIS bus-name matching (lower index = higher priority).
+    # Any MPRIS service whose bus name (after the "org.mpris.MediaPlayer2."
+    # prefix) contains one of these substrings is scored accordingly.
+    _MPRIS_PRIORITY = [
+        'spotify',      # Spotify desktop app
+        'chromium',     # Chromium-based browsers (Brave, Edge, Chrome, Opera, Vivaldi)
+        'brave',
+        'chrome',
+        'edge',
+        'firefox',      # Firefox
+        'opera',
+    ]
+
+    @staticmethod
+    def _mpris_player_score(bus_name: str) -> int:
+        """
+        Returns a priority score for the given MPRIS bus name.
+        Lower value = higher priority.  Unknown players get a high value (100).
+        """
+        suffix = bus_name.split('org.mpris.MediaPlayer2.', 1)[-1].lower()
+        for idx, keyword in enumerate(SpotifyPlayer._MPRIS_PRIORITY):
+            if keyword in suffix:
+                return idx
+        return 100  # Unknown player — lowest priority
+
+    def _find_best_mpris_dbus(self, session_bus) -> Optional[str]:
+        """
+        Enumerates all org.mpris.MediaPlayer2.* services on the D-Bus session
+        bus and returns the best one.  'Best' means: prefer a service whose
+        PlaybackStatus is 'Playing'; among equally-playing services, prefer
+        the one highest in _MPRIS_PRIORITY.
+
+        Returns the bus name string, or None.
+        """
+        mpris_prefix = "org.mpris.MediaPlayer2."
+        candidates: List[Tuple[str, int, bool]] = []  # (bus_name, priority, is_playing)
+
+        for name in session_bus.list_names():
+            name_str = str(name)
+            if not name_str.startswith(mpris_prefix):
+                continue
+            priority = self._mpris_player_score(name_str)
+            # Probe playback status
+            is_playing = False
+            try:
+                obj = session_bus.get_object(name_str, "/org/mpris/MediaPlayer2")
+                iface = self._dbus.Interface(obj, "org.freedesktop.DBus.Properties")
+                status = str(iface.Get("org.mpris.MediaPlayer2.Player", "PlaybackStatus"))
+                is_playing = (status == "Playing")
+            except Exception:
+                pass
+            candidates.append((name_str, priority, is_playing))
+
+        if not candidates:
+            return None
+
+        # Sort: playing first, then by priority score (lower = better)
+        candidates.sort(key=lambda c: (not c[2], c[1]))
+        chosen = candidates[0][0]
+        log_once(f"mpris_chosen_{chosen}", f"[MPRIS] Selected service: {chosen} (from {len(candidates)} candidates)")
+        return chosen
+
     def _get_info_dbus_python(self) -> Dict[str, Any]:
         result = {
             'title': None, 'artist': None, 'position': 0.0,
@@ -701,26 +763,13 @@ class SpotifyPlayer:
         }
         try:
             session_bus = self._dbus.SessionBus()
-            spotify_service = None
+            best_service = self._find_best_mpris_dbus(session_bus)
 
-            for name in session_bus.list_names():
-                name_str = str(name)
-                if name_str.startswith("org.mpris.MediaPlayer2.spotify"):
-                    spotify_service = name_str
-                    break
-
-            if not spotify_service:
-                for name in session_bus.list_names():
-                    name_str = str(name)
-                    if name_str.startswith("org.mpris.MediaPlayer2.") and "spotify" in name_str.lower():
-                        spotify_service = name_str
-                        break
-
-            if not spotify_service:
+            if not best_service:
                 return result
 
-            spotify_obj = session_bus.get_object(spotify_service, "/org/mpris/MediaPlayer2")
-            props_iface = self._dbus.Interface(spotify_obj, "org.freedesktop.DBus.Properties")
+            player_obj = session_bus.get_object(best_service, "/org/mpris/MediaPlayer2")
+            props_iface = self._dbus.Interface(player_obj, "org.freedesktop.DBus.Properties")
 
             metadata = props_iface.Get("org.mpris.MediaPlayer2.Player", "Metadata")
             playback_status = str(props_iface.Get("org.mpris.MediaPlayer2.Player", "PlaybackStatus"))
@@ -747,6 +796,60 @@ class SpotifyPlayer:
 
         return result
 
+    def _find_best_mpris_gio(self, bus):
+        """
+        Gio equivalent of _find_best_mpris_dbus.  Enumerates all MPRIS
+        services via org.freedesktop.DBus.ListNames and returns the best one.
+        """
+        mpris_prefix = "org.mpris.MediaPlayer2."
+        candidates: List[Tuple[str, int, bool]] = []
+
+        try:
+            result_variant = bus.call_sync(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "ListNames",
+                None,
+                self._glib.VariantType.new("(as)"),
+                self._gio.DBusCallFlags.NONE,
+                -1,
+                None
+            )
+            names_variant = result_variant.get_child_value(0)
+            for i in range(names_variant.n_children()):
+                name = names_variant.get_child_value(i).get_string()
+                if not name.startswith(mpris_prefix):
+                    continue
+                priority = self._mpris_player_score(name)
+                is_playing = False
+                try:
+                    proxy = self._gio.DBusProxy.new_sync(
+                        bus, self._gio.DBusProxyFlags.NONE, None,
+                        name, "/org/mpris/MediaPlayer2",
+                        "org.freedesktop.DBus.Properties", None
+                    )
+                    sv = proxy.call_sync(
+                        "Get",
+                        self._glib.Variant("(ss)", ("org.mpris.MediaPlayer2.Player", "PlaybackStatus")),
+                        self._gio.DBusCallFlags.NONE, -1, None
+                    )
+                    status = sv.get_child_value(0).get_variant().get_string()
+                    is_playing = (status == "Playing")
+                except Exception:
+                    pass
+                candidates.append((name, priority, is_playing))
+        except Exception:
+            pass
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda c: (not c[2], c[1]))
+        chosen = candidates[0][0]
+        log_once(f"mpris_gio_chosen_{chosen}", f"[MPRIS/Gio] Selected service: {chosen} (from {len(candidates)} candidates)")
+        return chosen
+
     def _get_info_gio(self) -> Dict[str, Any]:
         result = {
             'title': None, 'artist': None, 'position': 0.0,
@@ -754,11 +857,16 @@ class SpotifyPlayer:
         }
         try:
             bus = self._gio.bus_get_sync(self._gio.BusType.SESSION, None)
+            best_service = self._find_best_mpris_gio(bus)
+
+            if not best_service:
+                return result
+
             proxy = self._gio.DBusProxy.new_sync(
                 bus,
                 self._gio.DBusProxyFlags.NONE,
                 None,
-                "org.mpris.MediaPlayer2.spotify",
+                best_service,
                 "/org/mpris/MediaPlayer2",
                 "org.freedesktop.DBus.Properties",
                 None
@@ -814,26 +922,34 @@ class SpotifyPlayer:
 
         return result
 
+    # Ordered player list for playerctl --player flag.
+    # playerctl picks the first one that is available / playing.
+    _PLAYERCTL_PLAYERS = "spotify,chromium,brave,chrome,firefox,opera,%any"
+
     def _get_info_playerctl(self) -> Dict[str, Any]:
         result = {
             'title': None, 'artist': None, 'position': 0.0,
             'duration': 0.0, 'status': 'Unknown', 'is_running': False
         }
         try:
-            cmd = ["playerctl", "--player=spotify", "metadata", "--format",
-                   "{{title}}|||{{artist}}|||{{position}}|||{{status}}|||{{mpris:length}}"]
+            cmd = ["playerctl",
+                   f"--player={self._PLAYERCTL_PLAYERS}",
+                   "metadata", "--format",
+                   "{{playerName}}|||{{title}}|||{{artist}}|||{{position}}|||{{status}}|||{{mpris:length}}"]
             output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True).strip()
             parts = output.split("|||")
-            if len(parts) >= 4:
-                result['title'] = parts[0]
-                result['artist'] = parts[1]
-                pos_val = float(parts[2]) if parts[2] else 0.0
+            if len(parts) >= 5:
+                player_name = parts[0]
+                result['title'] = parts[1]
+                result['artist'] = parts[2]
+                pos_val = float(parts[3]) if parts[3] else 0.0
                 result['position'] = pos_val / 1_000_000.0 if pos_val > 10000 else pos_val
-                result['status'] = parts[3]
+                result['status'] = parts[4]
                 result['is_running'] = True
-                if len(parts) >= 5 and parts[4]:
-                    dur_val = float(parts[4])
+                if len(parts) >= 6 and parts[5]:
+                    dur_val = float(parts[5])
                     result['duration'] = dur_val / 1_000_000.0 if dur_val > 10000 else dur_val
+                log_once(f"playerctl_{player_name}", f"[playerctl] Using player: {player_name}")
         except Exception:
             pass
 
