@@ -16,6 +16,7 @@ def main():
     """
     app = QApplication(sys.argv)
     app.setApplicationName("Lyrune Desktop Widget")
+    app.setDesktopFileName("lyrune")          # Sets WM_CLASS for compositor window rules
     app.setQuitOnLastWindowClosed(False)
 
     widget = LyricsWidget()
