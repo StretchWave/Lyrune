@@ -20,41 +20,7 @@ from lyrune.settings_manager import SettingsManager
 from lyrune.settings_dialog import SettingsDialog
 from lyrune.logger import log_event
 from lyrune.animation_engine import LyricsRenderer
-from lyrune.ui_theme import get_icon, MENU_STYLESHEET
-
-
-def create_system_tray_icon() -> QIcon:
-    """
-    Generates a clean music note icon for the Windows System Tray.
-    Uses actual drawing primitives instead of emoji (which renders as a blank square
-    on many Windows systems because QPainter can't render emoji reliably).
-    """
-    pixmap = QPixmap(32, 32)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    # Background circle
-    painter.setBrush(QBrush(QColor("#007ACC")))
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawEllipse(1, 1, 30, 30)
-
-    # Draw a music note shape
-    pen = QPen(QColor("#FFFFFF"))
-    pen.setWidth(2)
-    painter.setPen(pen)
-    painter.setBrush(QBrush(QColor("#FFFFFF")))
-
-    # Note head (filled ellipse)
-    painter.drawEllipse(8, 18, 8, 6)
-    # Stem
-    painter.drawLine(16, 21, 16, 8)
-    # Flag
-    painter.drawLine(16, 8, 22, 12)
-    painter.drawLine(16, 11, 22, 15)
-
-    painter.end()
-    return QIcon(pixmap)
+from lyrune.ui_theme import get_icon, get_app_icon, MENU_STYLESHEET
 
 
 class LyricsWidget(QWidget):
@@ -84,6 +50,11 @@ class LyricsWidget(QWidget):
         self.lrclib = LRCLibClient()
         self.parser = LRCParser()
 
+        # Set app-wide icon (taskbar + all windows)
+        app = QApplication.instance()
+        if app:
+            app.setWindowIcon(get_app_icon())
+
         # Start dedicated background worker for Windows media polling
         self.player.start_worker_thread()
 
@@ -105,6 +76,14 @@ class LyricsWidget(QWidget):
 
         # Unsynced lyrics fallback
         self._unsynced_lyrics: str = ""
+
+        # Lyrics retry state
+        self._lyrics_retry_count: int = 0
+        self._lyrics_retry_max: int = 3
+        self._lyrics_fetch_failed: bool = False  # True when LRCLIB returned empty
+        self._lyrics_retry_timer = QTimer(self)
+        self._lyrics_retry_timer.setInterval(3000)  # 3 seconds
+        self._lyrics_retry_timer.timeout.connect(self._on_lyrics_retry_tick)
 
         # Resize debounce timer
         self._resize_timer = QTimer(self)
@@ -236,7 +215,7 @@ class LyricsWidget(QWidget):
 
     def _init_system_tray(self):
         """Initializes the Windows System Tray Icon & Context Menu."""
-        self.tray_icon = QSystemTrayIcon(create_system_tray_icon(), self)
+        self.tray_icon = QSystemTrayIcon(get_app_icon(), self)
         self.tray_icon.setToolTip("Lyrune Desktop Widget")
 
         # System Tray Menu
@@ -563,11 +542,6 @@ class LyricsWidget(QWidget):
             self.renderer.set_active_index(active_idx)
         elif self._unsynced_lyrics:
             pass  # Already set in _on_lyrics_fetched
-        else:
-            if self._pending_fetch_track == track_id:
-                pass
-            else:
-                self.renderer.set_status("No synced lyrics found")
 
     def _on_song_changed(self, artist: str, title: str):
         """Triggers async lyrics fetch on song change with smooth fade transition."""
@@ -575,11 +549,20 @@ class LyricsWidget(QWidget):
         self._unsynced_lyrics = ""
         self._pending_fetch_track = f"{artist} - {title}"
 
+        # Reset retry state for the new song
+        self._lyrics_retry_count = 0
+        self._lyrics_fetch_failed = False
+        self._lyrics_retry_timer.stop()
+
         def _mid_transition():
             self.renderer.set_status("Loading lyrics...")
 
         self.renderer.fade_out_then(_mid_transition)
 
+        self._start_lyrics_fetch(artist, title)
+
+    def _start_lyrics_fetch(self, artist: str, title: str):
+        """Launches a background lyrics fetch worker for the given track."""
         if self._lyrics_worker and self._lyrics_worker.isRunning():
             old = self._lyrics_worker
             self._retired_workers.append(old)
@@ -597,6 +580,38 @@ class LyricsWidget(QWidget):
         self._lyrics_worker.lyrics_ready.connect(self._on_lyrics_fetched)
         self._lyrics_worker.start()
 
+    def _on_lyrics_retry_tick(self):
+        """Retry timer callback: re-fetch lyrics if still loading or previously failed."""
+        if not self.current_song_artist or not self.current_song_title:
+            self._lyrics_retry_timer.stop()
+            return
+
+        track_id = f"{self.current_song_artist} - {self.current_song_title}"
+
+        # Check if lyrics were already loaded successfully
+        if self.parser.has_lyrics() or self._unsynced_lyrics:
+            self._lyrics_retry_timer.stop()
+            return
+
+        self._lyrics_retry_count += 1
+        log_event(f"🔄 [Lyrics Retry] Attempt {self._lyrics_retry_count}/{self._lyrics_retry_max} for '{track_id}'", force=True)
+
+        if self._lyrics_retry_count >= self._lyrics_retry_max:
+            self._lyrics_retry_timer.stop()
+            # Show contextual error message
+            if self._lyrics_fetch_failed:
+                self.renderer.set_status("Lyrics not found")
+                log_event(f"❌ [Lyrics Not Found] Lyrics not found for '{track_id}' after {self._lyrics_retry_max} attempts", force=True)
+            else:
+                self.renderer.set_status("Lyrics aren't being loaded")
+                log_event(f"❌ [Lyrics Load Failure] Lyrics aren't being loaded for '{track_id}' after {self._lyrics_retry_max} attempts", force=True)
+            return
+
+        # Re-fetch: clear cache for this track and try again
+        self.lrclib.clear_track_cache(self.current_song_artist, self.current_song_title)
+        self.renderer.set_status("Retrying lyrics...")
+        self._start_lyrics_fetch(self.current_song_artist, self.current_song_title)
+
     def _on_lyrics_fetched(self, artist: str, title: str, synced_lrc: str, unsynced_lrc: str):
         """Callback when lyrics fetch completes (runs on main thread via Qt signal)."""
         track_id = f"{artist} - {title}"
@@ -612,17 +627,31 @@ class LyricsWidget(QWidget):
             if self.parser.has_lyrics():
                 log_event(f"✅ [Lyrics Found] Found {self.parser.line_count} synced timestamped lines for '{artist} - {title}'", force=True)
                 self.renderer.set_lines(self.parser.texts)
+                self._lyrics_retry_timer.stop()
+                return
             else:
                 log_event(f"⚠️ [Lyrics Status] Synced data fetched but 0 valid timestamped lines for '{artist} - {title}'", force=True)
-                self.renderer.set_status("No synced lyrics found")
         elif unsynced_lrc:
             raw_lines = [line.strip() for line in unsynced_lrc.split('\n') if line.strip()]
             self._unsynced_lyrics = "\n".join(raw_lines[:15])
             log_event(f"⚠️ [Lyrics Status] Found plain text unsynced lyrics for '{artist} - {title}'", force=True)
             self.renderer.set_lines(raw_lines[:15])
+            self._lyrics_retry_timer.stop()
+            return
         else:
             log_event(f"❌ [Lyrics Not Found] Could not find lyrics on LRCLIB for '{artist} - {title}'", force=True)
-            self.renderer.set_status("No synced lyrics found")
+            self._lyrics_fetch_failed = True
+
+        # Lyrics not found or empty — start retry timer if not already retrying
+        if self._lyrics_retry_count < self._lyrics_retry_max and not self._lyrics_retry_timer.isActive():
+            self.renderer.set_status("Loading lyrics...")
+            self._lyrics_retry_timer.start()
+        elif self._lyrics_retry_count >= self._lyrics_retry_max:
+            # Already exhausted retries
+            if self._lyrics_fetch_failed:
+                self.renderer.set_status("Lyrics not found")
+            else:
+                self.renderer.set_status("Lyrics aren't being loaded")
 
     # --- Mouse Hover Events ---
     def enterEvent(self, event):
@@ -702,12 +731,44 @@ class LyricsWidget(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._is_dragging:
                 self._is_dragging = False
+                # Snap to corner if enabled and near a screen edge
+                if self.settings_mgr.get("snap_to_corners", False):
+                    self._snap_to_nearest_corner()
                 # Save position after drag
                 pos = self.pos()
                 self.settings_mgr.set("window_x", pos.x())
                 self.settings_mgr.set("window_y", pos.y())
                 self._apply_pending_resize()
         super().mouseReleaseEvent(event)
+
+    def _snap_to_nearest_corner(self):
+        """Snap the overlay to the nearest screen corner if within threshold of any screen border."""
+        screen = QApplication.screenAt(self.pos())
+        if not screen:
+            screen = QApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        pos = self.pos()
+        w, h = self.width(), self.height()
+        threshold = 60
+
+        near_left = (pos.x() - geo.left()) < threshold
+        near_right = ((geo.left() + geo.width()) - (pos.x() + w)) < threshold
+        near_top = (pos.y() - geo.top()) < threshold
+        near_bottom = ((geo.top() + geo.height()) - (pos.y() + h)) < threshold
+
+        # Only snap if near at least one border
+        if not (near_left or near_right or near_top or near_bottom):
+            return
+
+        center_x = geo.left() + geo.width() / 2.0
+        center_y = geo.top() + geo.height() / 2.0
+        widget_center_x = pos.x() + w / 2.0
+        widget_center_y = pos.y() + h / 2.0
+
+        snap_x = geo.left() if widget_center_x < center_x else (geo.left() + geo.width() - w)
+        snap_y = geo.top() if widget_center_y < center_y else (geo.top() + geo.height() - h)
+
+        self.move(int(snap_x), int(snap_y))
 
     def resizeEvent(self, event):
         """Debounced resize: saves dimensions after 500ms of no resize activity."""

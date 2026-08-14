@@ -1,3 +1,5 @@
+import os
+import sys
 from dataclasses import dataclass
 from typing import Optional
 from PyQt6.QtGui import QIcon, QColor, QPixmap, QPainter, QBrush, QPen, QFont, QKeySequence
@@ -6,6 +8,44 @@ from PyQt6.QtWidgets import (
     QWidget, QSlider, QHBoxLayout, QLabel, QPushButton, QColorDialog
 )
 import qtawesome as qta
+
+
+def _resolve_asset_path(filename: str) -> str:
+    """Resolves an asset path that works in both dev and PyInstaller frozen mode."""
+    if getattr(sys, 'frozen', False):
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, 'assets', filename)
+
+
+def get_app_icon() -> QIcon:
+    """Loads the Lyrune logo from assets/logo.png as the application icon."""
+    icon_path = _resolve_asset_path('logo.png')
+    if os.path.exists(icon_path):
+        return QIcon(icon_path)
+    # Fallback: try .ico
+    ico_path = _resolve_asset_path('logo.ico')
+    if os.path.exists(ico_path):
+        return QIcon(ico_path)
+    # Last resort: generate a simple icon
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QBrush(QColor("#007ACC")))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawEllipse(1, 1, 30, 30)
+    pen = QPen(QColor("#FFFFFF"))
+    pen.setWidth(2)
+    painter.setPen(pen)
+    painter.setBrush(QBrush(QColor("#FFFFFF")))
+    painter.drawEllipse(8, 18, 8, 6)
+    painter.drawLine(16, 21, 16, 8)
+    painter.drawLine(16, 8, 22, 12)
+    painter.drawLine(16, 11, 22, 15)
+    painter.end()
+    return QIcon(pixmap)
 
 
 @dataclass(frozen=True)

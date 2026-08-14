@@ -44,6 +44,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "auto_hide_on_pause": False,  # Auto-hide overlay when media is paused/stopped
     "exclude_from_capture": False, # Exclude overlay window from OBS/Discord screen capture (Windows)
     "track_sync_offsets": {},     # Per-track sync timing offsets persistent dict
+    "snap_to_corners": False,     # Snap overlay to nearest screen corner when dragged near edges
 }
 
 PRESETS: Dict[str, Dict[str, Any]] = {

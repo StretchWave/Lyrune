@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from lyrune.ui_theme import (
-    PALETTE, DARK_THEME_STYLESHEET, get_icon, ToggleSwitch, ValueSlider, ColorSwatchButton, KeycapWidget
+    PALETTE, DARK_THEME_STYLESHEET, get_icon, get_app_icon, ToggleSwitch, ValueSlider, ColorSwatchButton, KeycapWidget
 )
 from lyrune.settings_manager import SettingsManager, PRESETS
 from lyrune.logger import AppLogger
@@ -43,7 +43,7 @@ class CustomTitleBar(QWidget):
         left_layout.setSpacing(8)
 
         icon_label = QLabel(self)
-        icon_label.setPixmap(get_icon("music", color=PALETTE.accent).pixmap(18, 18))
+        icon_label.setPixmap(get_app_icon().pixmap(20, 20))
         left_layout.addWidget(icon_label)
 
         title_label = QLabel("Lyrune", self)
@@ -231,6 +231,7 @@ class SettingsDialog(QDialog):
         self.resize(780, 680)
         self.setMinimumSize(680, 560)
         self.setStyleSheet(DARK_THEME_STYLESHEET)
+        self.setWindowIcon(get_app_icon())
 
         self._init_ui()
         self._load_current_values()
@@ -521,6 +522,10 @@ class SettingsDialog(QDialog):
         self.auto_resize_switch = ToggleSwitch("Auto-adapt Window Height to Fit Lyrics", self)
         self.auto_resize_switch.toggled.connect(self._on_control_changed)
         form.addRow("", self.auto_resize_switch)
+
+        self.snap_corners_switch = ToggleSwitch("Snap to Screen Corners when Dragged Near Edges", self)
+        self.snap_corners_switch.toggled.connect(self._on_control_changed)
+        form.addRow("", self.snap_corners_switch)
 
         self.context_lines_slider = ValueSlider(0, 5, 2, " lines", self)
         self.context_lines_slider.valueChanged.connect(self._on_control_changed)
@@ -837,6 +842,7 @@ class SettingsDialog(QDialog):
         self.exclude_capture_switch.setChecked_silent(s.get("exclude_from_capture", False))
         self.auto_hide_switch.setChecked_silent(s.get("auto_hide_on_pause", False))
         self.auto_resize_switch.setChecked_silent(s.get("auto_resize_height", True))
+        self.snap_corners_switch.setChecked_silent(s.get("snap_to_corners", False))
 
         self.context_lines_slider.setValue(s.get("context_lines", 2))
         self.sync_offset_slider.setValue(s.get("sync_offset_ms", 0))
@@ -896,6 +902,7 @@ class SettingsDialog(QDialog):
             "auto_hide_on_pause": self.auto_hide_switch.isChecked(),
             "context_lines": self.context_lines_slider.value(),
             "auto_resize_height": self.auto_resize_switch.isChecked(),
+            "snap_to_corners": self.snap_corners_switch.isChecked(),
             "selected_media_source": selected_source_id or "Auto-Detect",
             "sync_offset_ms": self.sync_offset_slider.value(),
             "animation_speed_ms": self.anim_speed_slider.value(),
