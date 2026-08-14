@@ -5,7 +5,7 @@ import sys
 import math
 import time
 from typing import Dict, Any, Optional, List
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QTimer, QRectF, QPointF
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QTimer
 from PyQt6.QtGui import QFont, QColor, QKeySequence, QMouseEvent, QPainter, QBrush, QPen, QLinearGradient
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
@@ -22,6 +22,7 @@ from lyrune.logger import AppLogger
 from lyrune.animation_engine import LyricsRenderer
 from lyrune.lrclib_client import LRCLibClient
 from lyrune.visualizer import BarVisualizer, AudioData
+from lyrune.window_utils import get_available_screen_options
 
 
 class VisualizerPreviewWidget(QWidget):
@@ -719,7 +720,63 @@ class SettingsDialog(QDialog):
         preview_card_layout.addWidget(self.vis_preview)
         layout.addWidget(preview_card)
 
-        # 3. Color & Gradients
+        # 3. Overlay Mode & Game HUD
+        overlay_group = QGroupBox("Overlay Mode && Game HUD", self.visualizer_page)
+        overlay_form = QFormLayout(overlay_group)
+
+        self.vis_overlay_mode_combo = QComboBox(self)
+        self.vis_overlay_mode_combo.addItems(["Normal", "Game Overlay"])
+        self.vis_overlay_mode_combo.currentTextChanged.connect(self._on_vis_overlay_mode_changed)
+        overlay_form.addRow("Overlay Mode:", self.vis_overlay_mode_combo)
+
+        self.vis_overlay_info = QLabel(
+            "💡 <b>Game Overlay Mode</b> positions the visualizer as a non-intrusive desktop HUD above borderless fullscreen games with click-through and multi-monitor tracking.<br>"
+            "<span style='color: #888888; font-size: 8.5pt;'>Note: Works best with borderless fullscreen & windowed games. Exclusive fullscreen may prevent desktop overlays from appearing.</span>",
+            self
+        )
+        self.vis_overlay_info.setWordWrap(True)
+        self.vis_overlay_info.setStyleSheet("padding: 6px 8px; background-color: rgba(255,255,255,0.04); border-radius: 6px;")
+        overlay_form.addRow(self.vis_overlay_info)
+
+        self.vis_overlay_screen_combo = QComboBox(self)
+        self.vis_overlay_screen_combo.addItems(get_available_screen_options())
+        self.vis_overlay_screen_combo.currentTextChanged.connect(self._on_control_changed)
+        self.vis_overlay_screen_label = QLabel("Target Screen:", self)
+        overlay_form.addRow(self.vis_overlay_screen_label, self.vis_overlay_screen_combo)
+
+        self.vis_overlay_pos_combo = QComboBox(self)
+        self.vis_overlay_pos_combo.addItems(["Bottom", "Top", "Left", "Right", "Custom"])
+        self.vis_overlay_pos_combo.currentTextChanged.connect(self._on_control_changed)
+        self.vis_overlay_pos_label = QLabel("Overlay Position:", self)
+        overlay_form.addRow(self.vis_overlay_pos_label, self.vis_overlay_pos_combo)
+
+        self.vis_overlay_margin_slider = ValueSlider(0, 60, 15, " px", self)
+        self.vis_overlay_margin_slider.valueChanged.connect(self._on_control_changed)
+        self.vis_overlay_margin_label = QLabel("Overlay Margin (Offset):", self)
+        overlay_form.addRow(self.vis_overlay_margin_label, self.vis_overlay_margin_slider)
+
+        self.vis_follow_window_switch = ToggleSwitch("Follow Active Fullscreen Window (Auto-switch monitor)", self)
+        self.vis_follow_window_switch.toggled.connect(self._on_vis_follow_window_toggled)
+        overlay_form.addRow("", self.vis_follow_window_switch)
+
+        self.vis_inactive_behavior_combo = QComboBox(self)
+        self.vis_inactive_behavior_combo.addItems(["Keep visible", "Hide"])
+        self.vis_inactive_behavior_combo.currentTextChanged.connect(self._on_control_changed)
+        self.vis_inactive_behavior_label = QLabel("When Target Window is Inactive:", self)
+        overlay_form.addRow(self.vis_inactive_behavior_label, self.vis_inactive_behavior_combo)
+
+        preset_row = QHBoxLayout()
+        self.btn_apply_game_preset = QPushButton("Apply Game Overlay Recommended Settings", self)
+        self.btn_apply_game_preset.setObjectName("btn_secondary")
+        self.btn_apply_game_preset.setIcon(get_icon("check", color=PALETTE.accent))
+        self.btn_apply_game_preset.clicked.connect(self._on_apply_game_overlay_preset)
+        preset_row.addWidget(self.btn_apply_game_preset)
+        preset_row.addStretch(1)
+        overlay_form.addRow(preset_row)
+
+        layout.addWidget(overlay_group)
+
+        # 4. Color & Gradients
         color_group = QGroupBox("Color && Multi-Stop Gradients", self.visualizer_page)
         color_form = QFormLayout(color_group)
 
@@ -881,6 +938,41 @@ class SettingsDialog(QDialog):
         self._on_control_changed()
         AppLogger.instance().log("🔄 [Visualizer] Visualizer settings reset to defaults.", force=True)
 
+    def _on_vis_overlay_mode_changed(self, mode_text: str):
+        is_game = mode_text == "Game Overlay"
+        self.vis_overlay_screen_combo.setVisible(is_game)
+        self.vis_overlay_screen_label.setVisible(is_game)
+        self.vis_overlay_pos_combo.setVisible(is_game)
+        self.vis_overlay_pos_label.setVisible(is_game)
+        self.vis_overlay_margin_slider.setVisible(is_game)
+        self.vis_overlay_margin_label.setVisible(is_game)
+        self.vis_follow_window_switch.setVisible(is_game)
+        self.btn_apply_game_preset.setVisible(is_game)
+        self._on_vis_follow_window_toggled(self.vis_follow_window_switch.isChecked() and is_game)
+
+        if not getattr(self, '_is_initializing', False):
+            parent_widget = self.parent()
+            if parent_widget and hasattr(parent_widget, 'visualizer_manager'):
+                parent_widget.visualizer_manager.set_overlay_mode(mode_text)
+            self._on_control_changed()
+
+    def _on_vis_follow_window_toggled(self, checked: bool):
+        is_game = self.vis_overlay_mode_combo.currentText() == "Game Overlay"
+        show_inactive = checked and is_game
+        self.vis_inactive_behavior_combo.setVisible(show_inactive)
+        self.vis_inactive_behavior_label.setVisible(show_inactive)
+        self._on_control_changed()
+
+    def _on_apply_game_overlay_preset(self):
+        self.vis_overlay_mode_combo.setCurrentText("Game Overlay")
+        self.vis_opacity_slider.setValue(85)
+        self.vis_top_switch.setChecked(True)
+        self.vis_click_through_switch.setChecked(True)
+        self.vis_overlay_margin_slider.setValue(15)
+        self.vis_overlay_pos_combo.setCurrentText("Bottom")
+        self._on_control_changed()
+        AppLogger.instance().log("🎮 [Game Overlay] Applied recommended Game Overlay preset (85% Opacity, Always on Top, Click-Through, 15px Margin).", force=True)
+
     # --- Page 2: Typography ---
     def _init_typography_page(self):
         layout = QVBoxLayout(self.typography_page)
@@ -1003,6 +1095,10 @@ class SettingsDialog(QDialog):
         self.keycap_vis_toggle = KeycapWidget("Ctrl+Shift+V", self)
         self.keycap_vis_toggle.keySequenceChanged.connect(self._on_control_changed)
         form.addRow("Toggle Visualizer Visibility:", self.keycap_vis_toggle)
+
+        self.keycap_game_toggle = KeycapWidget("Ctrl+Shift+G", self)
+        self.keycap_game_toggle.keySequenceChanged.connect(self._on_control_changed)
+        form.addRow("Toggle Game Overlay Mode:", self.keycap_game_toggle)
 
         self.keycap_refresh = KeycapWidget("Ctrl+R", self)
         self.keycap_refresh.keySequenceChanged.connect(self._on_control_changed)
@@ -1326,6 +1422,20 @@ class SettingsDialog(QDialog):
         self.vis_corner_radius_slider.setValue(s.get("visualizer_corner_radius", 4))
         self._on_vis_shape_changed(shape)
 
+        # Game Overlay loading
+        overlay_mode = s.get("visualizer_overlay_mode", "Normal")
+        self.vis_overlay_mode_combo.setCurrentText(overlay_mode)
+        self.vis_overlay_screen_combo.setCurrentText(s.get("visualizer_overlay_screen", "Active Game Monitor"))
+        self.vis_overlay_pos_combo.setCurrentText(s.get("visualizer_overlay_position", "Bottom"))
+        self.vis_overlay_margin_slider.setValue(s.get("visualizer_overlay_margin", 15))
+        follow_win = s.get("visualizer_follow_active_window", False)
+        self.vis_follow_window_switch.setChecked_silent(follow_win)
+        self.vis_inactive_behavior_combo.setCurrentText(s.get("visualizer_overlay_inactive_behavior", "Keep visible"))
+        self._on_vis_overlay_mode_changed(overlay_mode)
+        self._on_vis_follow_window_toggled(follow_win)
+
+        self.keycap_game_toggle.setKeySequence(QKeySequence(s.get("shortcut_toggle_game_overlay", "Ctrl+Shift+G")))
+
         self.vis_orientation_combo.setCurrentText(s.get("visualizer_orientation", "Bottom").capitalize())
         self.vis_width_slider.setValue(s.get("visualizer_width", 320))
         self.vis_height_slider.setValue(s.get("visualizer_height", 64))
@@ -1419,6 +1529,7 @@ class SettingsDialog(QDialog):
             "animation_speed_ms": self.anim_speed_slider.value(),
             "shortcut_toggle_overlay": self.keycap_toggle.keySequence().toString(),
             "shortcut_toggle_visualizer": self.keycap_vis_toggle.keySequence().toString(),
+            "shortcut_toggle_game_overlay": self.keycap_game_toggle.keySequence().toString(),
             "shortcut_refresh": self.keycap_refresh.keySequence().toString(),
             "shortcut_nudge_minus": self.keycap_minus.keySequence().toString(),
             "shortcut_nudge_plus": self.keycap_plus.keySequence().toString(),
@@ -1447,6 +1558,14 @@ class SettingsDialog(QDialog):
             "visualizer_click_through": self.vis_click_through_switch.isChecked(),
             "visualizer_always_on_top": self.vis_top_switch.isChecked(),
             "visualizer_exclude_from_capture": self.vis_exclude_capture_switch.isChecked(),
+
+            # Game Overlay Settings
+            "visualizer_overlay_mode": self.vis_overlay_mode_combo.currentText(),
+            "visualizer_overlay_screen": self.vis_overlay_screen_combo.currentText(),
+            "visualizer_overlay_position": self.vis_overlay_pos_combo.currentText(),
+            "visualizer_overlay_margin": self.vis_overlay_margin_slider.value(),
+            "visualizer_follow_active_window": self.vis_follow_window_switch.isChecked(),
+            "visualizer_overlay_inactive_behavior": self.vis_inactive_behavior_combo.currentText(),
         }
 
     def _on_apply(self):
@@ -1454,6 +1573,7 @@ class SettingsDialog(QDialog):
         shortcuts = [
             new_settings.get("shortcut_toggle_overlay"),
             new_settings.get("shortcut_toggle_visualizer"),
+            new_settings.get("shortcut_toggle_game_overlay"),
             new_settings.get("shortcut_refresh"),
             new_settings.get("shortcut_nudge_minus"),
             new_settings.get("shortcut_nudge_plus"),

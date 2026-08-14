@@ -1,13 +1,16 @@
 # Lyrune — Complete Project Overview & Technical Architecture
 
 ## 1. Executive Summary
-**Lyrune** is an ultra-modern, cross-platform (Windows & Linux) desktop lyrics overlay widget. It detects the currently playing song in real time from **Spotify Desktop, Spotify Web, YouTube Music, and Web Browsers (Brave, Chrome, Edge, Firefox, Opera)**, fetches synchronized timestamped LRC lyrics from **LRCLIB**, and renders them as a sleek, translucent, always-on-top, Spotify-style floating overlay directly on the desktop.
+**Lyrune** is an ultra-modern, cross-platform (Windows & Linux) desktop lyrics overlay and standalone audio visualizer system. It detects the currently playing song in real time from **Spotify Desktop, Spotify Web, YouTube Music, and Web Browsers (Brave, Chrome, Edge, Firefox, Opera)**, fetches synchronized timestamped LRC lyrics from **LRCLIB**, and renders them as a sleek, translucent, Spotify-style floating overlay directly on the desktop. It also features a decoupled, standalone floating **Audio Visualizer** with live WASAPI loopback DSP spectral analysis, multi-edge snapping with automatic 90° rotation, a customization studio, and a non-intrusive **Game Overlay Mode** designed for borderless fullscreen gaming.
 
 ---
 
 ## 2. Tech Stack & Dependencies
 - **Language**: Python 3.10+ (Tested up to Python 3.13)
-- **GUI & Rendering Framework**: PyQt6 (Qt6) — Custom QPainter-based renderer with QPropertyAnimation and transclucent hardware-accelerated surfaces.
+- **GUI & Rendering Framework**: PyQt6 (Qt6) — Custom QPainter-based renderer with QPropertyAnimation, vector drawing, and translucent hardware-accelerated surfaces.
+- **Audio DSP & Capture Engine**:
+  - **Windows**: Native WASAPI loopback capture (`IAudioClient` / `IAudioCaptureClient` via 64-bit `ctypes`).
+  - **Spectral Analysis**: NumPy FFT with logarithmic frequency grouping (32 logarithmic bins spanning 20Hz–20kHz), dynamic range compression, and temporal attack/decay envelope smoothing.
 - **Media Session Interfacing**:
   - **Windows**: `winrt-Windows.Media.Control` (GSMTC - Global System Media Transport Controls) + `pywin32` (win32gui window title fallback).
   - **Linux**: `dbus-python` / `Gio` / `playerctl` (MPRIS D-Bus interface).
@@ -34,7 +37,15 @@ LyricScript/
 │   ├── settings_manager.py        # Atomic JSON persistence (%APPDATA%/Lyrune), debounced writes
 │   ├── settings_dialog.py         # Frameless settings window, live preview, diagnostics log
 │   ├── ui_theme.py                # Custom widgets (ToggleSwitch, ValueSlider, ColorSwatch, etc.)
-│   └── logger.py                  # Singleton thread-safe event logger with Qt signal emission
+│   ├── window_utils.py            # Multi-monitor detection, edge-snapping, 64-bit Win32 Z-guard
+│   ├── logger.py                  # Singleton thread-safe event logger with Qt signal emission
+│   └── visualizer/                # Standalone Audio Visualizer Subsystem
+│       ├── __init__.py            # Package exports (VisualizerManager, VisualizerWindow, etc.)
+│       ├── base.py                # BaseVisualizer & BaseAudioSource abstractions
+│       ├── audio_source.py        # Native WASAPI loopback & DSP spectral analysis engine
+│       ├── bar_visualizer.py      # Rounded bar, pill, and square bar vector renderer
+│       ├── visualizer_window.py   # Independent frameless floating visualizer window
+│       └── visualizer_manager.py  # Visualizer coordinator, game tracker, and snapshot manager
 ├── build_installer.bat            # One-click PyInstaller + Inno Setup build script
 ├── installer.iss                  # Inno Setup Windows installer configuration
 ├── Lyrune.spec                    # PyInstaller directory distribution spec
@@ -50,53 +61,39 @@ LyricScript/
 ## 4. Detailed Module Architecture
 
 ### 4.1. `lyrune/main.py` (Application Lifecycle & Single Instance)
-- **Single Instance Enforcement**: Uses a named Windows kernel mutex (`Global\LyruneDesktopWidgetMutex` via `ctypes.windll.kernel32.CreateMutexW`) or a POSIX PID lockfile. If an instance is already running, subsequent launches terminate silently with exit code 0.
-- **Windows Taskbar Integration**: Invokes `SetCurrentProcessExplicitAppUserModelID("stretchwave.lyrune.app.2.0")` so Windows taskbar groups windows correctly under the custom logo instead of generic `python.exe`.
+- **Single Instance Enforcement**: Uses a named Windows kernel mutex (`Global\LyruneDesktopWidgetMutex` via `ctypes.windll.kernel32.CreateMutexW`) or a POSIX PID lockfile.
+- **Windows Taskbar Integration**: Invokes `SetCurrentProcessExplicitAppUserModelID("stretchwave.lyrune.app.2.0")` for clean taskbar grouping.
 - **Warning Suppression**: Selectively filters harmless urllib3/requests version warnings.
 
-### 4.2. `lyrune/lyrics_widget.py` (Desktop Overlay & Window Logic)
-- **Window Characteristics**: Frameless (`Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool`), translucent (`WA_TranslucentBackground`), mouse tracking enabled.
-- **Border & Corner Snapping**: When dragging the overlay and releasing within 50px of any screen boundary:
-  - Snapping to left/right side keeps the current vertical Y position.
-  - Snapping to top/bottom edge keeps the current horizontal X position.
-  - Snapping near both axes positions the window flush in the corner.
-- **Auto-Hide on Pause/Stop**: Automatically hides the overlay when playback pauses, stops, or Spotify closes, and restores visibility when playback resumes (while respecting manual `Ctrl+H` toggle).
-- **Auto-Resize Height**: Dynamically fits the window height to the visible context lines, deferred during mouse hover so the window surface never jumps under the cursor.
-- **Screen Capture Exclusion**: Toggles `SetWindowDisplayAffinity(hwnd, 0x11)` (`WDA_EXCLUDEFROMCAPTURE`) with fallback to `0x01` (`WDA_MONITOR`) to exclude lyrics from OBS / Discord stream captures.
-- **3-Stage Retry Logic**: If lyrics are slow/loading, triggers 3 automatic retries at 3-second intervals, displaying contextual status: `"Lyrics not found"` (404/empty) vs `"Lyrics aren't being loaded"` (timeout/connection failure).
+### 4.2. `lyrune/lyrics_widget.py` (Desktop Lyrics Overlay)
+- **Window Characteristics**: Frameless (`Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowDoesNotAcceptFocus`), translucent (`WA_TranslucentBackground`), non-activating (`WA_ShowWithoutActivating`).
+- **Border & Corner Snapping**: Snapping within 50px of any screen boundary respects work areas across multi-monitor setups.
+- **Screen Capture Exclusion**: Toggles `SetWindowDisplayAffinity(hwnd, 0x11)` (`WDA_EXCLUDEFROMCAPTURE`) to hide lyrics from OBS / Discord stream captures.
+- **Native Z-Guard Engine**: Dynamically monitors and maintains topmost Z-order position above fullscreen games without stealing keyboard focus.
 
-### 4.3. `lyrune/animation_engine.py` (LyricsRenderer)
-- **Custom Spotify-Style Renderer**: Custom Qt QWidget executing vector drawing via `QPainter` with antialiasing and subpixel layout calculation.
-- **Smooth Vertical Scroll**: Driven by `QPropertyAnimation` over `scroll_y_prop` using cubic easing curves (`InOutCubic`).
-- **High-Contrast Text Contour Outline**: Generates an 8-direction contour stroke around the active line to ensure crisp legibility over bright, colorful, or complex wallpapers.
-- **Drop Shadows & Opacity Hierarchy**: Active line displays at user-defined opacity (`active_line_opacity`); context lines smoothly fall off proportionally based on line distance from active line.
-- **Adaptive Contrast Inversion**: A 400ms background timer samples desktop luminance behind the overlay and automatically switches text color between dark (`#111111`) and light (`#FFFFFF`).
+### 4.3. `lyrune/visualizer/` (Standalone Audio Visualizer Subsystem)
+- **Independent Floating Window**: `VisualizerWindow` operates as its own top-level window, completely decoupled from `LyricsWidget`.
+- **Live WASAPI Loopback DSP**: `AdaptiveAudioSource` captures real Windows loopback audio buffers directly from WASAPI, runs FFT frequency extraction across 32 logarithmic bands, dynamic range compression, and noise floor gating.
+- **Edge Snapping & 90° Rotation**:
+  - Snapping to screen top/bottom sets horizontal orientation (bars grow upward or downward).
+  - Snapping to screen left/right sets vertical orientation (bars grow inward to the right or left).
+  - Snapping to screen borders automatically adjusts window dimensions ($L \times T \leftrightarrow T \times L$).
+- **Customization Studio**:
+  - Bar shapes: *Pill*, *Rounded Bar*, *Square Bar*.
+  - Gradient Engine: Multi-stop linear gradients with customizable stops and directions (Vertical, Horizontal, Inward, Outward).
+  - Bar count: Auto-calculated by window dimensions or manual override ($8\text{--}128$ bars).
+  - Spacing, thickness, base opacity, attack/decay speeds.
+- **Game Overlay Mode**:
+  - Specialized desktop HUD mode for borderless fullscreen games.
+  - Multi-monitor target screen routing (*Active Game Monitor*, *Primary Monitor*, *Monitor X*).
+  - Preset screen positions (*Top*, *Bottom*, *Left*, *Right*, *Top-Left*, etc.) with configurable margin slider ($0\text{--}60\text{ px}$).
+  - Non-destructive state snapshots: seamlessly preserves user's normal desktop position and settings when toggling Game Overlay Mode (`Ctrl+Shift+G`).
 
-### 4.4. `lyrune/spotify_player.py` (Media Engine)
-- **Windows WinRT GSMTC**: Communicates asynchronously with Windows Global System Media Transport Controls running inside a dedicated `MediaWorkerThread` (QThread) with proper COM lifecycle management (`CoInitializeEx` / `CoUninitialize`).
-- **Target Media Source Routing**: Can auto-detect the active player or lock specifically to a chosen browser tab or desktop application (e.g. Brave, Chrome, Edge, Spotify.exe).
-- **Window Title Fallback**: Secondary win32gui scraper that reads browser tab names (`Title - Artist - Browser`) when GSMTC is unavailable.
-- **Track Metadata Cleaner**: Cleans track noise (removes `[Official Video]`, `(Remix)`, ` - TikTok`, feat tags, browser titles).
-
-### 4.5. `lyrune/lrclib_client.py` & `lrc_parser.py` (Lyrics Fetching & Sync)
-- **Multi-Tier API Lookup**:
-  1. In-Memory Cache (Instant O(1)).
-  2. Disk Cache (`%APPDATA%/Lyrune/.lyrics_cache/<hash>.json`).
-  3. LRCLIB Exact Query (`/api/get?artist_name=...&track_name=...`).
-  4. LRCLIB Fuzzy Query (`/api/search?q=...`).
-  5. Swapped Artist/Title Query.
-  6. Cleaned / Stripped Regex Query.
-- **Parser Engine**: Parses timestamp tags `[mm:ss.xx]` and performs binary search lookup (`bisect_right`) against live playback position.
-
-### 4.6. `lyrune/settings_manager.py` & `settings_dialog.py` (Settings & UI)
-- **Atomic Disk Writes**: Saves JSON settings to APPDATA via temporary file replacement (`os.replace`) to eliminate file corruption.
-- **Settings Dialog UI**:
-  - Custom frameless title bar with Now Playing preview pill and window controls.
-  - Tabbed sidebar navigation: *Appearance*, *Typography*, *Behavior & Source*, *Animations*, *Shortcuts*, *Advanced & Cache*.
-  - Live preview canvas showing instant visual feedback.
-  - Dynamic live linking of Active & Context opacity sliders.
-  - Manual lyric search & binding dialog (`ManualSearchDialog`).
-  - Real-time diagnostic console log with copy tools.
+### 4.4. `lyrune/window_utils.py` (Z-Order & Multi-Monitor Utilities)
+- **64-bit Win32 Native Interop**: Fully typed `argtypes` and `restype` for `SetWindowPos`, `GetWindowLongW`, `SetWindowLongW`, `GetWindow`, and `GetTopWindow`.
+- **Native Styles**: `apply_native_overlay_styles()` configures `WS_EX_TOPMOST`, `WS_EX_TOOLWINDOW`, `WS_EX_LAYERED`, `WS_EX_NOACTIVATE`, and `WS_EX_TRANSPARENT`.
+- **Focus Preservation**: All Z-order reassertions use `SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW`.
+- **Lightweight Conflict Detection**: `is_window_below_any_topmost()` detects occlusion by borderless games while avoiding internal reassertion competition between Lyrune windows.
 
 ---
 
@@ -104,42 +101,26 @@ LyricScript/
 
 | Setting Key | Default | Description |
 |---|---|---|
-| `font_family` | `"Segoe UI"` | Font family for lyric text rendering |
-| `font_size` | `24` | Font size in points (12 to 48 pt) |
-| `font_bold` | `true` | Bold typography toggle |
-| `text_color` | `"#FFFFFF"` | Primary lyric text color |
-| `bg_color` | `"#000000"` | Background container color |
-| `bg_opacity` | `0` | Background container opacity percentage (0 to 100%) |
-| `border_enabled` | `false` | Overlay window subtle 1px border toggle |
-| `shadow_enabled` | `true` | Drop shadow rendering toggle |
-| `shadow_color` | `"#000000"` | Drop shadow color |
-| `shadow_blur` | `8` | Shadow blur radius in pixels (0 to 30 px) |
-| `text_align` | `"Center"` | Text alignment: `"Left"`, `"Center"`, `"Right"` |
-| `show_song_info` | `true` | Visibility of "Artist - Title" sub-label |
-| `always_on_top` | `true` | Keeps overlay above all desktop windows |
-| `lock_position` | `false` | Locks window position against mouse dragging |
-| `window_width` | `800` | Overlay width in pixels |
-| `window_height` | `220` | Overlay height in pixels |
-| `window_x` / `window_y` | `-1` | Saved screen coordinates (-1 for default center) |
-| `selected_media_source`| `"Auto-Detect"`| Target media source session ID |
-| `sync_offset_ms` | `0` | Global timing nudge in milliseconds (-5000 to +5000 ms) |
-| `context_lines` | `2` | Number of context lines shown before and after active line |
-| `auto_resize_height` | `true` | Auto-fits overlay height to context lines |
-| `animation_speed_ms` | `400` | Duration of vertical scroll animation in milliseconds |
-| `adaptive_color` | `false` | Smart desktop luminance contrast color inversion |
-| `active_text_outline` | `true` | 8-directional contour outline on active lyric |
-| `active_line_opacity` | `100` | Opacity percentage of active playing lyric |
-| `context_line_opacity`| `45` | Opacity percentage of surrounding context lyrics |
-| `link_opacity_levels` | `true` | Scales context opacity proportionally with active opacity |
-| `shortcut_toggle_overlay`| `"Ctrl+H"`| Hotkey to show/hide lyrics overlay |
-| `shortcut_refresh` | `"Ctrl+R"` | Hotkey to reload lyrics |
-| `shortcut_nudge_minus`| `"Ctrl+Left"`| Hotkey to nudge sync earlier (-250ms) |
-| `shortcut_nudge_plus` | `"Ctrl+Right"`| Hotkey to nudge sync later (+250ms) |
-| `click_through` | `false` | Passes all mouse clicks through overlay |
-| `auto_hide_on_pause` | `false` | Auto-hides overlay when media is paused/stopped |
-| `exclude_from_capture`| `false` | Hides overlay from OBS / Discord screen captures |
-| `track_sync_offsets` | `{}` | Persistent per-song timing offset dictionary |
-| `snap_to_corners` | `false` | Snaps overlay to screen borders & corners on release |
+| `always_on_top` | `true` | Keeps lyrics overlay above all desktop windows |
+| `click_through` | `false` | Passes all mouse clicks through lyrics overlay |
+| `exclude_from_capture` | `false` | Hides lyrics overlay from OBS / Discord screen captures |
+| `visualizer_enabled` | `true` | Standalone audio visualizer master toggle |
+| `visualizer_always_on_top` | `true` | Keeps visualizer window topmost |
+| `visualizer_click_through` | `false` | Passes mouse clicks through visualizer window |
+| `visualizer_exclude_from_capture`| `false` | Hides visualizer from OBS / Discord screen captures |
+| `visualizer_overlay_mode` | `"Normal"` | Mode selector: `"Normal"` or `"Game Overlay"` |
+| `visualizer_overlay_screen` | `"Active Game Monitor"` | Target display for Game Overlay mode |
+| `visualizer_overlay_position` | `"Bottom"` | HUD preset anchor for Game Overlay mode |
+| `visualizer_overlay_margin` | `15` | Edge margin distance in pixels for Game Overlay mode |
+| `visualizer_style` | `"Pill Bars"` | Visualizer style strategy |
+| `visualizer_shape` | `"Pill"` | Bar shape: `"Pill"`, `"Rounded Bar"`, `"Square Bar"` |
+| `visualizer_color_mode` | `"Gradient"` | Color rendering mode: `"Solid"`, `"Gradient"`, `"Rainbow"` |
+| `visualizer_gradient_stops` | `[...]` | List of `[position, hex_color]` stops for multi-stop gradient |
+| `visualizer_gradient_direction` | `"Vertical"` | Direction: `"Vertical"`, `"Horizontal"`, `"Inward"`, `"Outward"` |
+| `visualizer_auto_bar_count` | `true` | Automatically computes bar count from window length & thickness |
+| `visualizer_bar_count` | `32` | Manual bar count override ($8\text{--}128$) |
+| `shortcut_toggle_game_overlay` | `"Ctrl+Shift+G"` | Hotkey to toggle visualizer Game Overlay mode |
+| `shortcut_toggle_visualizer` | `"Ctrl+Shift+V"` | Hotkey to show/hide standalone visualizer |
 
 ---
 

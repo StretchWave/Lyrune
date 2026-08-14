@@ -9,8 +9,8 @@ from PyQt6.QtWidgets import (
     QMenu, QSystemTrayIcon
 )
 from PyQt6.QtGui import (
-    QColor, QAction, QActionGroup, QIcon, QPixmap, QPainter,
-    QPen, QBrush, QShortcut, QKeySequence
+    QColor, QAction, QActionGroup, QPainter,
+    QPen, QShortcut, QKeySequence
 )
 
 from lyrune.spotify_player import SpotifyPlayer
@@ -22,7 +22,14 @@ from lyrune.logger import log_event
 from lyrune.animation_engine import LyricsRenderer
 from lyrune.ui_theme import get_icon, get_app_icon, MENU_STYLESHEET
 from lyrune.visualizer import VisualizerManager
-from lyrune.window_utils import calculate_edge_snap, constrain_to_work_area, get_screen_for_rect
+from lyrune.window_utils import (
+    calculate_edge_snap,
+    constrain_to_work_area,
+    apply_native_overlay_styles,
+    reassert_window_topmost,
+    is_window_below_foreground,
+    is_window_below_any_topmost
+)
 
 
 class LyricsWidget(QWidget):
@@ -38,16 +45,12 @@ class LyricsWidget(QWidget):
       - Auto-resize-height is deferred while the pointer is over the overlay so the
         window surface stays put while interacting (stable right-click hit-testing).
       - Saves/restores window position across restarts.
-      - Proper drawn tray icon (no emoji rendering issues).
-      - Ctrl+Shift+L keyboard shortcut to toggle visibility.
-      - Paused-state logging throttled (no 20 Hz spam).
+      - Standard Windows borderless overlay support with Z-guard & focus preservation.
     """
 
-    def __init__(self):
-        super().__init__()
-
-        # Core modules
-        self.settings_mgr = SettingsManager()
+    def __init__(self, settings_manager: Optional[SettingsManager] = None, parent=None):
+        super().__init__(parent)
+        self.settings_mgr = settings_manager or SettingsManager()
         self.player = SpotifyPlayer()
         self.lrclib = LRCLibClient()
         self.parser = LRCParser()
@@ -88,7 +91,7 @@ class LyricsWidget(QWidget):
         self._lyrics_retry_max: int = 3
         self._lyrics_fetch_failed: bool = False  # True when LRCLIB returned empty
         self._lyrics_retry_timer = QTimer(self)
-        self._lyrics_retry_timer.setInterval(3000)  # 3 seconds
+        self._lyrics_retry_timer.setInterval(2000)
         self._lyrics_retry_timer.timeout.connect(self._on_lyrics_retry_tick)
 
         # Resize debounce timer
@@ -105,9 +108,11 @@ class LyricsWidget(QWidget):
     def _init_ui(self):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.Tool
+            Qt.WindowType.Tool |
+            Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setMouseTracking(True)
 
         w = self.settings_mgr.get("window_width", 800)
@@ -148,6 +153,10 @@ class LyricsWidget(QWidget):
         self._shortcut_vis_toggle.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._shortcut_vis_toggle.activated.connect(self.visualizer_manager.toggle_visibility)
 
+        self._shortcut_game_toggle = QShortcut(self)
+        self._shortcut_game_toggle.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._shortcut_game_toggle.activated.connect(self._toggle_game_overlay_from_shortcut)
+
         self._sc_nudge_minus = QShortcut(self)
         self._sc_nudge_minus.activated.connect(lambda: self._nudge_sync_offset(-250))
 
@@ -166,6 +175,7 @@ class LyricsWidget(QWidget):
         """Updates QShortcut key sequences dynamically from settings dictionary."""
         key_toggle = s.get("shortcut_toggle_overlay", "Ctrl+H")
         key_vis_toggle = s.get("shortcut_toggle_visualizer", "Ctrl+Shift+V")
+        key_game_toggle = s.get("shortcut_toggle_game_overlay", "Ctrl+Shift+G")
         key_refresh = s.get("shortcut_refresh", "Ctrl+R")
         key_minus = s.get("shortcut_nudge_minus", "Ctrl+Left")
         key_plus = s.get("shortcut_nudge_plus", "Ctrl+Right")
@@ -174,6 +184,8 @@ class LyricsWidget(QWidget):
             self._shortcut_toggle.setKey(QKeySequence(key_toggle))
         if key_vis_toggle:
             self._shortcut_vis_toggle.setKey(QKeySequence(key_vis_toggle))
+        if key_game_toggle:
+            self._shortcut_game_toggle.setKey(QKeySequence(key_game_toggle))
         if key_refresh:
             self._sc_refresh.setKey(QKeySequence(key_refresh))
         if key_minus:
@@ -289,6 +301,27 @@ class LyricsWidget(QWidget):
         self.action_vis_enable.setChecked(self.settings_mgr.get("visualizer_enabled", True))
         self.action_vis_enable.triggered.connect(self._toggle_visualizer_enabled_from_tray)
         self.vis_menu.addAction(self.action_vis_enable)
+
+        self.vis_menu.addSeparator()
+
+        # Overlay Mode Submenu
+        self.vis_mode_menu = QMenu("Overlay Mode", self.vis_menu)
+        self.vis_mode_menu.setStyleSheet(MENU_STYLESHEET)
+
+        current_mode = self.settings_mgr.get("visualizer_overlay_mode", "Normal")
+        self.action_vis_mode_normal = QAction("Normal", self.vis_mode_menu)
+        self.action_vis_mode_normal.setCheckable(True)
+        self.action_vis_mode_normal.setChecked(current_mode == "Normal")
+        self.action_vis_mode_normal.triggered.connect(lambda: self._set_visualizer_mode_from_tray("Normal"))
+        self.vis_mode_menu.addAction(self.action_vis_mode_normal)
+
+        self.action_vis_mode_game = QAction("Game Overlay", self.vis_mode_menu)
+        self.action_vis_mode_game.setCheckable(True)
+        self.action_vis_mode_game.setChecked(current_mode == "Game Overlay")
+        self.action_vis_mode_game.triggered.connect(lambda: self._set_visualizer_mode_from_tray("Game Overlay"))
+        self.vis_mode_menu.addAction(self.action_vis_mode_game)
+
+        self.vis_menu.addMenu(self.vis_mode_menu)
 
         self.vis_menu.addSeparator()
 
@@ -485,8 +518,16 @@ class LyricsWidget(QWidget):
                 if not res and exclude_capture:
                     # Fallback to WDA_MONITOR for older Windows builds
                     ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000001)
+
+                # Standard Windows Extended Styles & Topmost Z-Order
+                apply_native_overlay_styles(
+                    hwnd,
+                    always_on_top=always_top,
+                    click_through=click_through,
+                    no_activate=True
+                )
             except Exception as e:
-                log_event(f"[DisplayAffinity Error] {e}")
+                log_event(f"[Lyrics Native Overlay Error] {e}")
 
         if hasattr(self, 'action_top'):
             self.action_top.setChecked(always_top)
@@ -582,6 +623,13 @@ class LyricsWidget(QWidget):
         if hasattr(self, 'visualizer_manager'):
             self.visualizer_manager.update_playback_state(info)
 
+        # Windows Z-guard: maintain topmost Z-order above fullscreen games without stealing focus
+        if sys.platform == "win32" and self.isVisible() and self.settings_mgr.get("always_on_top", True):
+            hwnd = int(self.winId()) if self.winId() else 0
+            vis_hwnd = int(self.visualizer_manager.window.winId()) if hasattr(self, 'visualizer_manager') and self.visualizer_manager.window.winId() else 0
+            if hwnd and (is_window_below_any_topmost(hwnd, excluded_hwnds=[vis_hwnd]) or is_window_below_foreground(hwnd)):
+                reassert_window_topmost(hwnd)
+
         if not info['is_running'] or not info['title']:
             self.renderer.set_status("Waiting for Spotify...")
             if self.settings_mgr.get("auto_hide_on_pause", False) and self.isVisible():
@@ -635,7 +683,7 @@ class LyricsWidget(QWidget):
             self.renderer.set_active_index(active_idx)
         elif self._unsynced_lyrics:
             if not self.renderer._lines:
-                self.renderer.set_lines([l for l in self._unsynced_lyrics.split('\n') if l])
+                self.renderer.set_lines([line for line in self._unsynced_lyrics.split('\n') if line])
 
     def _on_song_changed(self, artist: str, title: str):
         """Triggers async lyrics fetch on song change with smooth fade transition."""
@@ -801,6 +849,32 @@ class LyricsWidget(QWidget):
         self.settings_mgr.set("click_through", checked)
         self._apply_settings(self.settings_mgr.settings)
 
+    # --- Standalone Visualizer Tray & Shortcut Handlers ---
+    def _toggle_visualizer_enabled_from_tray(self, checked: bool):
+        self.settings_mgr.set("visualizer_enabled", checked)
+        self.visualizer_manager.apply_settings(self.settings_mgr.settings)
+
+    def _set_visualizer_mode_from_tray(self, mode: str):
+        self.visualizer_manager.set_overlay_mode(mode)
+        if hasattr(self, 'action_vis_mode_normal'):
+            self.action_vis_mode_normal.setChecked(mode == "Normal")
+            self.action_vis_mode_game.setChecked(mode == "Game Overlay")
+
+    def _toggle_game_overlay_from_shortcut(self):
+        self.visualizer_manager.toggle_game_overlay()
+        new_mode = self.settings_mgr.get("visualizer_overlay_mode", "Normal")
+        if hasattr(self, 'action_vis_mode_normal'):
+            self.action_vis_mode_normal.setChecked(new_mode == "Normal")
+            self.action_vis_mode_game.setChecked(new_mode == "Game Overlay")
+
+    def _toggle_visualizer_top_from_tray(self, checked: bool):
+        self.settings_mgr.set("visualizer_always_on_top", checked)
+        self.visualizer_manager.apply_settings(self.settings_mgr.settings)
+
+    def _toggle_visualizer_click_through_from_tray(self, checked: bool):
+        self.settings_mgr.set("visualizer_click_through", checked)
+        self.visualizer_manager.apply_settings(self.settings_mgr.settings)
+
     # --- Context Menu ---
     def contextMenuEvent(self, event):
         self._update_source_menu()
@@ -854,3 +928,19 @@ class LyricsWidget(QWidget):
         """Actually save dimensions to disk (called by debounce timer)."""
         self.settings_mgr.set("window_width", self.width())
         self.settings_mgr.set("window_height", self.height())
+
+    def shutdown(self):
+        """Cleanly shuts down player threads, visualizer timers, and saves settings."""
+        if hasattr(self, 'visualizer_manager'):
+            self.visualizer_manager.shutdown()
+        if hasattr(self, 'player'):
+            self.player.stop_worker_thread()
+        if hasattr(self, 'settings_mgr'):
+            self.settings_mgr.save_immediate()
+
+    def _quit_application(self):
+        self.shutdown()
+        app = QApplication.instance()
+        if app:
+            app.quit()
+

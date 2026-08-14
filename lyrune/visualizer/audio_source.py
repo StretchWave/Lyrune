@@ -16,12 +16,12 @@ import time
 import math
 import threading
 from typing import List, Dict, Any, Optional, Tuple
-from PyQt6.QtCore import QObject, pyqtSignal, QTimer
+from PyQt6.QtCore import QTimer
 
 import numpy as np
 
 from lyrune.visualizer.base import BaseAudioSource, AudioData
-from lyrune.logger import log_event, log_once
+from lyrune.logger import log_event
 
 
 # ==============================================================================
@@ -40,8 +40,8 @@ if sys.platform == "win32":
             ("Data3", wintypes.WORD),
             ("Data4", wintypes.BYTE * 8)
         ]
-        def __init__(self, l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8):
-            super().__init__(l, w1, w2, (wintypes.BYTE * 8)(b1, b2, b3, b4, b5, b6, b7, b8))
+        def __init__(self, data1, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8):
+            super().__init__(data1, w1, w2, (wintypes.BYTE * 8)(b1, b2, b3, b4, b5, b6, b7, b8))
 
     CLSID_MMDeviceEnumerator = GUID(0xBCDE0395, 0xE52F, 0x467C, 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E)
     IID_IMMDeviceEnumerator = GUID(0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6)
@@ -237,7 +237,6 @@ class NativeWasapiLoopback:
                     hr = capture_vtbl.GetBuffer(pCaptureClient, byref(pData), byref(numFrames), byref(flags), None, None)
                     if hr == 0 and numFrames.value > 0:
                         frames_count = numFrames.value
-                        total_samples = frames_count * self.channels
 
                         # Float 32-bit (standard WASAPI mix format)
                         if bits_per_sample == 32:

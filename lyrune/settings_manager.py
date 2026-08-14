@@ -77,6 +77,17 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "visualizer_always_on_top": True,
     "visualizer_exclude_from_capture": False,
     "shortcut_toggle_visualizer": "Ctrl+Shift+V",
+
+    # Game Overlay Mode Settings
+    "visualizer_overlay_mode": "Normal",               # "Normal", "Game Overlay"
+    "visualizer_overlay_screen": "Active Game Monitor", # "Active Game Monitor", "Primary Monitor", "Monitor 1", ...
+    "visualizer_overlay_position": "Bottom",           # "Bottom", "Top", "Left", "Right", "Custom"
+    "visualizer_overlay_margin": 15,                   # px margin inside game area (0 to 60)
+    "visualizer_follow_active_window": False,          # Dynamically track foreground game window screen
+    "visualizer_overlay_inactive_behavior": "Keep visible", # "Keep visible", "Hide"
+    "shortcut_toggle_game_overlay": "Ctrl+Shift+G",
+    "visualizer_normal_snapshot": {},
+    "visualizer_game_snapshot": {},
 }
 
 PRESETS: Dict[str, Dict[str, Any]] = {

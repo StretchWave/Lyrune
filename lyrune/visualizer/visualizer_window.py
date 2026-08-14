@@ -13,17 +13,17 @@ Responsibilities:
 
 import sys
 from typing import Optional, Dict, Any
-from PyQt6.QtCore import Qt, QPoint, QRect, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QApplication
-from PyQt6.QtGui import QPainter, QMouseEvent, QResizeEvent
+from PyQt6.QtGui import QPainter, QMouseEvent, QResizeEvent, QScreen
 
 from lyrune.visualizer.base import BaseVisualizer
 from lyrune.window_utils import (
     get_screen_for_rect,
     constrain_to_work_area,
-    calculate_edge_snap,
     calculate_visualizer_snap,
-    calculate_preset_position
+    calculate_preset_position,
+    apply_native_overlay_styles
 )
 from lyrune.logger import log_event
 
@@ -59,9 +59,11 @@ class VisualizerWindow(QWidget):
     def _init_window(self) -> None:
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.Tool
+            Qt.WindowType.Tool |
+            Qt.WindowType.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setMouseTracking(True)
 
         self._apply_orientation_geometry()
@@ -110,14 +112,21 @@ class VisualizerWindow(QWidget):
         if safe_pos != current_pos:
             self.move(safe_pos)
 
-    def set_preset_position(self, preset: str) -> None:
+    def set_preset_position(
+        self,
+        preset: str,
+        screen: Optional[QScreen] = None,
+        margin: int = 0,
+        use_full_screen: bool = False
+    ) -> None:
         """Snaps the visualizer to a preset edge ('TOP', 'BOTTOM', 'LEFT', 'RIGHT', 'FREE')."""
         preset_upper = preset.upper()
-        screen = get_screen_for_rect(self.geometry())
+        if screen is None:
+            screen = get_screen_for_rect(self.geometry())
 
         if preset_upper in ("TOP", "BOTTOM", "LEFT", "RIGHT"):
             orientation, target_pos, phys_w, phys_h = calculate_preset_position(
-                preset_upper, self._logical_length, self._logical_thickness, screen
+                preset_upper, self._logical_length, self._logical_thickness, screen, margin=margin, use_full_screen=use_full_screen
             )
             self._orientation = orientation
             self._snap_edge = preset_upper
@@ -128,7 +137,7 @@ class VisualizerWindow(QWidget):
                 self.visualizer.resize(phys_w, phys_h)
 
             self.move(target_pos)
-            log_event(f"📐 [Visualizer] Snapped to preset edge: {preset_upper} ({phys_w}x{phys_h})", force=True)
+            log_event(f"📐 [Visualizer] Positioned to preset edge: {preset_upper} on {screen.name()} ({phys_w}x{phys_h}, margin={margin})", force=True)
         else:  # FREE
             self._snap_edge = "NONE"
             log_event("📐 [Visualizer] Set to FREE floating mode", force=True)
@@ -197,6 +206,14 @@ class VisualizerWindow(QWidget):
                 hwnd = int(self.winId())
                 affinity = 0x00000011 if exclude_capture else 0x0
                 ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, affinity)
+
+                # Standard Windows Extended Styles & Topmost Z-Order
+                apply_native_overlay_styles(
+                    hwnd,
+                    always_on_top=always_top,
+                    click_through=click_through,
+                    no_activate=True
+                )
             except Exception as e:
                 log_event(f"[Visualizer DisplayAffinity Error] {e}")
 

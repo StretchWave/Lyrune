@@ -10,9 +10,9 @@ Aesthetic & Customization Features:
   - Multi-orientation support (BOTTOM, TOP, LEFT, RIGHT, FREE).
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from PyQt6.QtCore import QRect, QRectF, QPointF, Qt
-from PyQt6.QtGui import QPainter, QColor, QBrush, QPen, QLinearGradient
+from PyQt6.QtGui import QPainter, QColor, QBrush, QLinearGradient
 
 from lyrune.visualizer.base import BaseVisualizer, AudioData
 
