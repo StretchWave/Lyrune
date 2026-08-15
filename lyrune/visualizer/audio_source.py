@@ -273,9 +273,9 @@ class NativeWasapiLoopback:
 class AudioDSP:
     """
     High-resolution spectral analysis engine.
-    Performs short-time FFT, Hann windowing, logarithmic perceptual grouping (55 Hz - 16 kHz),
+    Performs short-time FFT, Hann windowing, Mel-scale perceptual frequency grouping,
     fractional bin interpolation, acoustic frequency tilt, dynamic range compression,
-    and noise floor gating.
+    multi-band AGC (Automatic Gain Control), and noise floor gating.
     """
     def __init__(self, sample_rate: int = 48000, fft_size: int = 4096):
         self.sample_rate = sample_rate
@@ -294,8 +294,9 @@ class AudioDSP:
         self.last_rms = 0.0
         self.last_peak = 0.0
 
-        # Per-bar temporal smoothing state (EMA on magnitudes)
+        # Per-bar temporal smoothing and local AGC state
         self._prev_bars: Optional[List[float]] = None
+        self.rolling_max_per_bar: Optional[np.ndarray] = None
 
     def push_pcm(self, samples: np.ndarray) -> None:
         """Appends new stereo or mono PCM float samples to the ring buffer."""
@@ -325,8 +326,8 @@ class AudioDSP:
 
     def analyze_spectrum(self, num_bars: int = 32) -> Tuple[List[float], float, float]:
         """
-        Computes logarithmic frequency band amplitudes scaled to num_bars.
-        Uses fractional bin interpolation for narrow bands to prevent aliasing.
+        Computes Mel-scale frequency band amplitudes scaled to num_bars.
+        Uses fractional bin interpolation and multi-band hybrid AGC for independent bar dynamics.
         Returns: (band_values [0.0, 1.0], rms_energy, peak_energy)
         """
         num_bars = max(4, num_bars)
@@ -362,12 +363,17 @@ class AudioDSP:
         else:
             self.rolling_max = max(0.01, self.rolling_max * 0.994 + frame_peak * 0.006)
 
-        # Calculate logarithmic frequency bands
-        band_edges = np.logspace(
-            np.log10(self.min_freq),
-            np.log10(self.max_freq),
-            num_bars + 1
-        )
+        # Initialize or resize multi-band AGC state
+        if self._prev_bars is None or len(self._prev_bars) != num_bars or self.rolling_max_per_bar is None or len(self.rolling_max_per_bar) != num_bars:
+            self._prev_bars = [0.0] * num_bars
+            self.rolling_max_per_bar = np.ones(num_bars, dtype=np.float32) * 0.02
+
+        # Calculate Mel-scale frequency bands (wider low frequency spacing in Hz)
+        # Mel(f) = 2595 * log10(1 + f / 700)
+        mel_min = 2595.0 * math.log10(1.0 + self.min_freq / 700.0)
+        mel_max = 2595.0 * math.log10(1.0 + self.max_freq / 700.0)
+        mel_edges = np.linspace(mel_min, mel_max, num_bars + 1)
+        band_edges = 700.0 * (10.0 ** (mel_edges / 2595.0) - 1.0)
         freq_per_bin = (self.sample_rate / 2.0) / max(1, freq_bins - 1)
 
         bar_values = []
@@ -381,33 +387,37 @@ class AudioDSP:
 
             if bin_span < 1.5:
                 # Narrow band: use fractional interpolation at the center
-                # This gives each bar a unique value even when bins overlap
                 center_bin = (bin_low + bin_high) * 0.5
                 raw_val = self._interp_magnitude(magnitudes, center_bin)
             else:
-                # Wide band: average over the covered bins
+                # Wide band: average over the covered bins with partial bin weights
                 idx_start = int(math.floor(bin_low))
                 idx_end = max(idx_start + 1, int(math.ceil(bin_high)))
                 idx_end = min(idx_end, freq_bins)
 
-                # Weighted edges for partial bin coverage
                 band_slice = magnitudes[idx_start:idx_end].copy()
                 if len(band_slice) > 1:
-                    # Weight the first and last bins by their fractional coverage
                     band_slice[0] *= (1.0 - (bin_low - idx_start))
                     band_slice[-1] *= (bin_high - int(math.floor(bin_high)))
                 raw_val = float(np.mean(band_slice)) if len(band_slice) > 0 else 0.0
 
-            # Acoustic frequency tilt: boost upper mids & highs for visual punch
+            # Acoustic frequency tilt: boost upper mids & highs for visual balance
             center_freq = math.sqrt(f_low * f_high)
-            tilt = math.pow(center_freq / 200.0, 0.4)
+            tilt = math.pow(center_freq / 200.0, 0.45)
             val = raw_val * tilt
 
-            # Dynamic compression / normalization
-            ref = max(1e-4, self.rolling_max)
+            # Update local rolling max for multi-band AGC
+            if val > self.rolling_max_per_bar[i]:
+                self.rolling_max_per_bar[i] = val
+            else:
+                self.rolling_max_per_bar[i] = max(1e-4, self.rolling_max_per_bar[i] * 0.993 + val * 0.007)
+
+            # Hybrid Dynamic Compression: 65% local bar AGC, 35% global spectrum peak
+            ref = 0.65 * self.rolling_max_per_bar[i] + 0.35 * self.rolling_max
+            ref = max(1e-4, ref)
             val_norm = val / ref
 
-            # Soft-knee power curve compression (gamma 0.55 for punchier dynamics)
+            # Soft-knee power curve compression (gamma 0.55 for visual punch)
             comp_val = math.pow(min(1.0, val_norm), 0.55)
 
             # Noise gate threshold
@@ -418,7 +428,7 @@ class AudioDSP:
 
         # Per-bar temporal EMA smoothing in the DSP layer
         if self._prev_bars is not None and len(self._prev_bars) == num_bars:
-            ema = 0.45  # Blend factor: higher = more responsive, lower = smoother
+            ema = 0.45  # Blend factor
             for i in range(num_bars):
                 bar_values[i] = self._prev_bars[i] + (bar_values[i] - self._prev_bars[i]) * ema
         self._prev_bars = bar_values[:]
@@ -558,7 +568,7 @@ class LoopbackAudioSource(BaseAudioSource):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._dsp = AudioDSP(sample_rate=48000, fft_size=2048)
+        self._dsp = AudioDSP(sample_rate=48000, fft_size=4096)
         self._target_bars = 32
         self._is_active = False
 
