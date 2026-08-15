@@ -14,6 +14,7 @@ Architecture:
 import sys
 import time
 import math
+import subprocess
 import threading
 from typing import List, Dict, Any, Optional, Tuple
 from PyQt6.QtCore import QTimer
@@ -398,10 +399,132 @@ class AudioDSP:
 # ==============================================================================
 # Audio Source Wrappers
 # ==============================================================================
+class LinuxLoopbackCapture:
+    """
+    Linux audio loopback capture via PulseAudio/PipeWire.
+    Uses `parec` to stream raw PCM float32 from a monitor source.
+    Auto-discovers the active monitor source via `pactl`.
+    """
+    def __init__(self, on_samples_callback):
+        self.on_samples = on_samples_callback
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self.sample_rate = 48000
+        self.channels = 2
+        self.device_name = ""
+        self.is_capturing = False
+        self._process: Optional[subprocess.Popen] = None
+
+    def _find_monitor_source(self) -> Optional[str]:
+        """Auto-detect the best monitor source (prefer RUNNING over SUSPENDED)."""
+        try:
+            out = subprocess.check_output(
+                ["pactl", "list", "short", "sources"],
+                stderr=subprocess.DEVNULL, text=True
+            )
+            monitors = []
+            for line in out.strip().splitlines():
+                parts = line.split('\t')
+                if len(parts) >= 5 and '.monitor' in parts[1]:
+                    name = parts[1]
+                    state = parts[4].strip().upper() if len(parts) > 4 else ""
+                    monitors.append((name, state))
+
+            # Prefer RUNNING monitor, then IDLE, then SUSPENDED
+            priority = {"RUNNING": 0, "IDLE": 1, "SUSPENDED": 2}
+            monitors.sort(key=lambda m: priority.get(m[1], 99))
+            if monitors:
+                return monitors[0][0]
+        except Exception as e:
+            log_event(f"[Linux Audio] pactl source discovery failed: {e}")
+        return None
+
+    def start(self) -> bool:
+        if self._thread and self._thread.is_alive():
+            return True
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._capture_worker, daemon=True, name="LinuxLoopbackThread")
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._process:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=1.0)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        self._thread = None
+        self._process = None
+        self.is_capturing = False
+
+    def _capture_worker(self) -> None:
+        monitor = self._find_monitor_source()
+        if not monitor:
+            log_event("❌ [Linux Audio] No monitor source found. Is PulseAudio/PipeWire running?")
+            return
+
+        self.device_name = monitor
+        # parec outputs raw PCM: float32 little-endian, stereo, 48kHz
+        cmd = [
+            "parec",
+            "--device", monitor,
+            "--format=float32le",
+            f"--channels={self.channels}",
+            f"--rate={self.sample_rate}",
+            "--latency-msec=20",
+        ]
+
+        try:
+            self._process = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+        except FileNotFoundError:
+            log_event("❌ [Linux Audio] 'parec' not found. Install pulseaudio-utils or pipewire-pulse.")
+            return
+        except Exception as e:
+            log_event(f"❌ [Linux Audio] Failed to start parec: {e}")
+            return
+
+        self.is_capturing = True
+        log_event(f"🎙️ [Linux Loopback] Connected: {self.sample_rate}Hz, {self.channels}ch, float32 — source: {monitor}", force=True)
+
+        # Read raw PCM in chunks (~20ms worth of samples)
+        bytes_per_sample = 4  # float32
+        chunk_frames = int(self.sample_rate * 0.02)  # 20ms
+        chunk_bytes = chunk_frames * self.channels * bytes_per_sample
+
+        try:
+            while not self._stop_event.is_set():
+                raw = self._process.stdout.read(chunk_bytes)
+                if not raw:
+                    break
+                samples = np.frombuffer(raw, dtype=np.float32)
+                if len(samples) >= self.channels:
+                    samples = samples.reshape(-1, self.channels)
+                    self.on_samples(samples)
+        except Exception as e:
+            log_event(f"❌ [Linux Loopback] Capture error: {e}")
+        finally:
+            self.is_capturing = False
+            if self._process:
+                try:
+                    self._process.terminate()
+                except Exception:
+                    pass
+            log_event("[Linux Loopback] Capture thread stopped.")
+
+
 class LoopbackAudioSource(BaseAudioSource):
     """
     Primary audio source capturing live audio loopback from the OS.
-    Runs native WASAPI on Windows and sounddevice monitor on Linux.
+    Runs native WASAPI on Windows and parec monitor on Linux.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -409,11 +532,11 @@ class LoopbackAudioSource(BaseAudioSource):
         self._target_bars = 32
         self._is_active = False
 
-        # Native WASAPI for Windows
+        # Platform-specific capture backend
         if sys.platform == "win32":
             self._backend = NativeWasapiLoopback(on_samples_callback=self._dsp.push_pcm)
         else:
-            self._backend = None
+            self._backend = LinuxLoopbackCapture(on_samples_callback=self._dsp.push_pcm)
 
         # Analysis timer (60 Hz)
         self._timer = QTimer(self)
