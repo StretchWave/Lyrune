@@ -5,8 +5,11 @@ Provides centralized, screen-aware geometry calculations for frameless desktop w
 (e.g., LyricsWidget, VisualizerWindow) without coupling the widgets together.
 """
 
+import os
 import sys
-from typing import Optional, Tuple, List
+import json
+import subprocess
+from typing import Optional, Tuple, List, Dict, Any
 from PyQt6.QtCore import QPoint, QRect, QSize
 from PyQt6.QtGui import QScreen
 from PyQt6.QtWidgets import QApplication
@@ -56,6 +59,7 @@ if sys.platform == "win32":
     # Win32 SetWindowPos Flags
     HWND_TOPMOST = ctypes.c_void_p(-1).value
     HWND_NOTOPMOST = ctypes.c_void_p(-2).value
+    HWND_BOTTOM = ctypes.c_void_p(1).value
     SWP_NOSIZE = 0x0001
     SWP_NOMOVE = 0x0002
     SWP_NOACTIVATE = 0x0010
@@ -462,13 +466,14 @@ def get_available_screen_options() -> List[str]:
 
 def apply_native_overlay_styles(
     hwnd: int,
+    layer_mode: str = "Top",
     always_on_top: bool = True,
     click_through: bool = False,
     no_activate: bool = True
 ) -> bool:
     """
     Applies standard Windows Extended Window Styles to an HWND to guarantee
-    flawless topmost, click-through, and non-activating desktop overlay behavior.
+    flawless topmost, background, click-through, and non-activating desktop overlay behavior.
     """
     if sys.platform != "win32" or not hwnd:
         return False
@@ -482,7 +487,10 @@ def apply_native_overlay_styles(
         # Base tool window & layered attributes
         ex_style |= (WS_EX_TOOLWINDOW | WS_EX_LAYERED)
 
-        if always_on_top:
+        is_top = (layer_mode == "Top") or (layer_mode is None and always_on_top)
+        is_bottom = (layer_mode == "Bottom")
+
+        if is_top:
             ex_style |= WS_EX_TOPMOST
         else:
             ex_style &= ~WS_EX_TOPMOST
@@ -499,7 +507,13 @@ def apply_native_overlay_styles(
 
         user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex_style)
 
-        target_z = HWND_TOPMOST if always_on_top else HWND_NOTOPMOST
+        if is_top:
+            target_z = HWND_TOPMOST
+        elif is_bottom:
+            target_z = HWND_BOTTOM
+        else:
+            target_z = HWND_NOTOPMOST
+
         user32.SetWindowPos(
             hwnd,
             target_z,
@@ -594,5 +608,86 @@ def is_window_below_foreground(hwnd: int) -> bool:
     except Exception:
         pass
     return False
+
+
+# ==============================================================================
+# Linux / Hyprland Native Window Management Integration
+# ==============================================================================
+def is_hyprland() -> bool:
+    """Checks if current session is running under Hyprland compositor."""
+    return bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
+
+
+def get_hyprland_clients() -> List[Dict[str, Any]]:
+    """Fetches currently active Hyprland windows/clients via JSON IPC."""
+    if not is_hyprland():
+        return []
+    try:
+        out = subprocess.check_output(["hyprctl", "clients", "-j"], stderr=subprocess.DEVNULL, text=True)
+        return json.loads(out)
+    except Exception:
+        return []
+
+
+def hyprland_dispatch(command: str, args: str = "") -> bool:
+    """Dispatches a window manager command to Hyprland."""
+    if not is_hyprland():
+        return False
+    try:
+        cmd = ["hyprctl", "dispatch", command]
+        if args:
+            cmd.append(args)
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.0)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def sync_hyprland_window(
+    window_title: str = "",
+    layer_mode: str = "Top",
+    target_pos: Optional[QPoint] = None,
+    target_size: Optional[QSize] = None
+) -> None:
+    """
+    Ensures the given Lyrune window floats, pins (Always on Top), and positions
+    accurately under the Hyprland Wayland compositor.
+    """
+    if not is_hyprland():
+        return
+
+    clients = get_hyprland_clients()
+    my_pid = os.getpid()
+
+    for c in clients:
+        if c.get("pid") == my_pid:
+            # Match by title or class
+            c_title = c.get("title", "")
+            if window_title and window_title not in c_title and c.get("class") != "lyrune":
+                continue
+
+            addr = c.get("address")
+            if not addr:
+                continue
+
+            # 1. Enforce Floating (prevent Hyprland tiling)
+            if not c.get("floating", False):
+                hyprland_dispatch("setfloating", f"address:{addr}")
+
+            # 2. Pinning / Always on Top Layering
+            is_pinned = c.get("pinned", False)
+            if layer_mode == "Top":
+                if not is_pinned:
+                    hyprland_dispatch("pin", f"address:{addr}")
+            elif layer_mode in ("Normal", "Bottom"):
+                if is_pinned:
+                    hyprland_dispatch("pin", f"address:{addr}")
+
+            # 3. Position & Size
+            if target_pos is not None and (target_pos.x() != -1 or target_pos.y() != -1):
+                hyprland_dispatch("movewindowpixel", f"exact {target_pos.x()} {target_pos.y()},address:{addr}")
+            if target_size is not None:
+                hyprland_dispatch("resizewindowpixel", f"exact {target_size.width()} {target_size.height()},address:{addr}")
+
 
 

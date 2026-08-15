@@ -13,7 +13,7 @@ Responsibilities:
 
 import sys
 from typing import Optional, Dict, Any
-from PyQt6.QtCore import Qt, QPoint, QRect, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QRect, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtGui import QPainter, QMouseEvent, QResizeEvent, QScreen
 
@@ -23,7 +23,8 @@ from lyrune.window_utils import (
     constrain_to_work_area,
     calculate_visualizer_snap,
     calculate_preset_position,
-    apply_native_overlay_styles
+    apply_native_overlay_styles,
+    sync_hyprland_window
 )
 from lyrune.logger import log_event
 
@@ -57,6 +58,7 @@ class VisualizerWindow(QWidget):
         self._init_window()
 
     def _init_window(self) -> None:
+        self.setWindowTitle("Lyrune Visualizer")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.Tool |
@@ -177,18 +179,27 @@ class VisualizerWindow(QWidget):
         log_event(f"🔄 [Visualizer] Restored state (Orientation: {self._orientation}, Snap: {self._snap_edge}, Pos: {self.pos().x()},{self.pos().y()})")
 
     def apply_settings(self, s: Dict[str, Any]) -> None:
-        """Applies window flags, click-through, always-on-top, and visualizer styles."""
-        always_top = s.get("visualizer_always_on_top", True)
+        """Applies window flags, click-through, layer mode, and visualizer styles."""
+        layer_mode = s.get("visualizer_window_layer_mode")
+        if not layer_mode:
+            layer_mode = "Top" if s.get("visualizer_always_on_top", True) else "Normal"
+
+        always_top = (layer_mode == "Top")
+        always_bottom = (layer_mode == "Bottom")
         click_through = s.get("visualizer_click_through", False)
         exclude_capture = s.get("visualizer_exclude_from_capture", False)
 
         was_visible = self.isVisible()
         current_flags = self.windowFlags()
 
+        # Clear layer flags
+        current_flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        current_flags &= ~Qt.WindowType.WindowStaysOnBottomHint
+
         if always_top:
             current_flags |= Qt.WindowType.WindowStaysOnTopHint
-        else:
-            current_flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        elif always_bottom:
+            current_flags |= Qt.WindowType.WindowStaysOnBottomHint
 
         if click_through:
             current_flags |= Qt.WindowType.WindowTransparentForInput
@@ -198,6 +209,10 @@ class VisualizerWindow(QWidget):
         self.setWindowFlags(current_flags)
         if was_visible:
             self.show()
+            if always_top:
+                self.raise_()
+            elif always_bottom:
+                self.lower()
 
         # Display Affinity for screen capture exclusion (Windows)
         if sys.platform == "win32" and self.winId():
@@ -207,15 +222,19 @@ class VisualizerWindow(QWidget):
                 affinity = 0x00000011 if exclude_capture else 0x0
                 ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, affinity)
 
-                # Standard Windows Extended Styles & Topmost Z-Order
+                # Standard Windows Extended Styles & Z-Order
                 apply_native_overlay_styles(
                     hwnd,
+                    layer_mode=layer_mode,
                     always_on_top=always_top,
                     click_through=click_through,
                     no_activate=True
                 )
             except Exception as e:
                 log_event(f"[Visualizer DisplayAffinity Error] {e}")
+
+        # Linux / Hyprland Compositor Sync (Enforces float, pin, geometry)
+        QTimer.singleShot(80, lambda: sync_hyprland_window("Lyrune Visualizer", layer_mode=layer_mode, target_pos=self.pos(), target_size=self.size()))
 
         # Update dimensions if changed
         new_len = s.get("visualizer_width", self._logical_length)
