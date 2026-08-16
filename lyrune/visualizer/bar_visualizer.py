@@ -131,16 +131,21 @@ class BarVisualizer(BaseVisualizer):
         self._recalculate_bar_count()
 
     def update_audio(self, audio_data: AudioData) -> None:
-        """Maps incoming real-time FFT frequency bands to target bar heights."""
+        """Maps incoming real-time FFT frequency bands to target bar heights with EMA smoothing."""
         if not audio_data or not audio_data.amplitudes:
             return
 
         raw_amps = audio_data.amplitudes
         raw_count = len(raw_amps)
 
+        # Temporal EMA smoothing factor on incoming FFT data
+        # Higher = smoother but more latent; 0.35 balances responsiveness and jitter
+        ema_factor = 0.35
+
         if raw_count == self._bar_count:
             for i in range(self._bar_count):
-                self._target_heights[i] = min(1.0, raw_amps[i] * self._sensitivity)
+                new_val = min(1.0, raw_amps[i] * self._sensitivity)
+                self._target_heights[i] += (new_val - self._target_heights[i]) * ema_factor
         else:
             # Resample across frequency bands using smooth linear interpolation
             for i in range(self._bar_count):
@@ -150,7 +155,8 @@ class BarVisualizer(BaseVisualizer):
                 frac = norm_idx - idx_low
 
                 val = raw_amps[idx_low] * (1.0 - frac) + raw_amps[idx_high] * frac
-                self._target_heights[i] = min(1.0, val * self._sensitivity)
+                new_val = min(1.0, val * self._sensitivity)
+                self._target_heights[i] += (new_val - self._target_heights[i]) * ema_factor
 
     def update_media_state(self, status: str, is_running: bool, track_id: str) -> None:
         """Handles song play/pause/stop lifecycle changes."""
@@ -170,8 +176,10 @@ class BarVisualizer(BaseVisualizer):
 
     def _update_physics(self) -> None:
         """Calculates separate transient attack and exponential release physics."""
-        attack_rate = 0.70
-        decay_rate = max(0.08, (1.0 - self._smoothing) * 0.45)
+        # Smoothed attack: lower = smoother rise (was 0.70, now 0.35)
+        attack_rate = 0.35
+        # Smoothed decay: controlled by user smoothing slider
+        decay_rate = max(0.04, (1.0 - self._smoothing) * 0.25)
 
         for i in range(self._bar_count):
             target = self._target_heights[i]
@@ -185,7 +193,7 @@ class BarVisualizer(BaseVisualizer):
             if self._current_heights[i] > self._peak_heights[i]:
                 self._peak_heights[i] = self._current_heights[i]
             else:
-                self._peak_heights[i] = max(0.0, self._peak_heights[i] - 0.03)
+                self._peak_heights[i] = max(0.0, self._peak_heights[i] - 0.012)
 
     def _create_brush(self, rect: QRect) -> QBrush:
         """Builds solid or multi-stop linear gradient brush for the current frame."""

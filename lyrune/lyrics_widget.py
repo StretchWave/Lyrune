@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QMenu, QSystemTrayIcon
 )
 from PyQt6.QtGui import (
-    QColor, QAction, QActionGroup, QPainter,
+    QColor, QFont, QAction, QActionGroup, QPainter,
     QPen, QShortcut, QKeySequence
 )
 
@@ -28,7 +28,8 @@ from lyrune.window_utils import (
     apply_native_overlay_styles,
     reassert_window_topmost,
     is_window_below_foreground,
-    is_window_below_any_topmost
+    is_window_below_any_topmost,
+    sync_hyprland_window
 )
 
 
@@ -106,6 +107,7 @@ class LyricsWidget(QWidget):
         self._init_timer()
 
     def _init_ui(self):
+        self.setWindowTitle("Lyrune Lyrics Overlay")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.Tool |
@@ -269,12 +271,31 @@ class LyricsWidget(QWidget):
         self.action_visible.triggered.connect(self._toggle_widget_visibility)
         self.tray_menu.addAction(self.action_visible)
 
-        top_icon = get_icon("pin_fill" if self.settings_mgr.get("always_on_top", True) else "pin")
-        self.action_top = QAction(top_icon, "Always on Top", self)
-        self.action_top.setCheckable(True)
-        self.action_top.setChecked(self.settings_mgr.get("always_on_top", True))
-        self.action_top.triggered.connect(self._toggle_always_on_top)
-        self.tray_menu.addAction(self.action_top)
+        # Layer Mode Submenu (Top, Normal, Bottom)
+        self.layer_menu = QMenu("Layer Mode", self.tray_menu)
+        self.layer_menu.setIcon(get_icon("pin"))
+        self.layer_menu.setStyleSheet(MENU_STYLESHEET)
+
+        curr_layer = self.settings_mgr.get("window_layer_mode", "Top" if self.settings_mgr.get("always_on_top", True) else "Normal")
+        self.action_layer_top = QAction("Always on Top (Foreground)", self.layer_menu)
+        self.action_layer_top.setCheckable(True)
+        self.action_layer_top.setChecked(curr_layer == "Top")
+        self.action_layer_top.triggered.connect(lambda: self._set_layer_mode_from_tray("Top"))
+        self.layer_menu.addAction(self.action_layer_top)
+
+        self.action_layer_normal = QAction("Normal Window", self.layer_menu)
+        self.action_layer_normal.setCheckable(True)
+        self.action_layer_normal.setChecked(curr_layer == "Normal")
+        self.action_layer_normal.triggered.connect(lambda: self._set_layer_mode_from_tray("Normal"))
+        self.layer_menu.addAction(self.action_layer_normal)
+
+        self.action_layer_bottom = QAction("Background / Desktop (Below All)", self.layer_menu)
+        self.action_layer_bottom.setCheckable(True)
+        self.action_layer_bottom.setChecked(curr_layer == "Bottom")
+        self.action_layer_bottom.triggered.connect(lambda: self._set_layer_mode_from_tray("Bottom"))
+        self.layer_menu.addAction(self.action_layer_bottom)
+
+        self.tray_menu.addMenu(self.layer_menu)
 
         lock_icon = get_icon("lock" if self.settings_mgr.get("lock_position", False) else "lock_open")
         self.action_lock = QAction(lock_icon, "Lock Position", self)
@@ -335,11 +356,30 @@ class LyricsWidget(QWidget):
 
         self.vis_menu.addSeparator()
 
-        self.action_vis_top = QAction("Always on Top", self)
-        self.action_vis_top.setCheckable(True)
-        self.action_vis_top.setChecked(self.settings_mgr.get("visualizer_always_on_top", True))
-        self.action_vis_top.triggered.connect(self._toggle_visualizer_top_from_tray)
-        self.vis_menu.addAction(self.action_vis_top)
+        # Visualizer Layer Mode Submenu
+        self.vis_layer_menu = QMenu("Layer Mode", self.vis_menu)
+        self.vis_layer_menu.setStyleSheet(MENU_STYLESHEET)
+
+        curr_vis_layer = self.settings_mgr.get("visualizer_window_layer_mode", "Top" if self.settings_mgr.get("visualizer_always_on_top", True) else "Normal")
+        self.action_vis_layer_top = QAction("Always on Top (Foreground)", self.vis_layer_menu)
+        self.action_vis_layer_top.setCheckable(True)
+        self.action_vis_layer_top.setChecked(curr_vis_layer == "Top")
+        self.action_vis_layer_top.triggered.connect(lambda: self._set_visualizer_layer_mode_from_tray("Top"))
+        self.vis_layer_menu.addAction(self.action_vis_layer_top)
+
+        self.action_vis_layer_normal = QAction("Normal Window", self.vis_layer_menu)
+        self.action_vis_layer_normal.setCheckable(True)
+        self.action_vis_layer_normal.setChecked(curr_vis_layer == "Normal")
+        self.action_vis_layer_normal.triggered.connect(lambda: self._set_visualizer_layer_mode_from_tray("Normal"))
+        self.vis_layer_menu.addAction(self.action_vis_layer_normal)
+
+        self.action_vis_layer_bottom = QAction("Background / Desktop (Below All)", self.vis_layer_menu)
+        self.action_vis_layer_bottom.setCheckable(True)
+        self.action_vis_layer_bottom.setChecked(curr_vis_layer == "Bottom")
+        self.action_vis_layer_bottom.triggered.connect(lambda: self._set_visualizer_layer_mode_from_tray("Bottom"))
+        self.vis_layer_menu.addAction(self.action_vis_layer_bottom)
+
+        self.vis_menu.addMenu(self.vis_layer_menu)
 
         self.action_vis_click_through = QAction("Click-Through Mode", self)
         self.action_vis_click_through.setCheckable(True)
@@ -485,15 +525,24 @@ class LyricsWidget(QWidget):
         target_src = s.get("selected_media_source", "Auto-Detect")
         self.player.set_target_source(target_src)
 
-        always_top = s.get("always_on_top", True)
+        layer_mode = s.get("window_layer_mode")
+        if not layer_mode:
+            layer_mode = "Top" if s.get("always_on_top", True) else "Normal"
+
+        always_top = (layer_mode == "Top")
+        always_bottom = (layer_mode == "Bottom")
         click_through = s.get("click_through", False)
         was_visible = self.isVisible()
         current_flags = self.windowFlags()
 
+        # Clear layer flags
+        current_flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        current_flags &= ~Qt.WindowType.WindowStaysOnBottomHint
+
         if always_top:
             current_flags |= Qt.WindowType.WindowStaysOnTopHint
-        else:
-            current_flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        elif always_bottom:
+            current_flags |= Qt.WindowType.WindowStaysOnBottomHint
 
         if click_through:
             current_flags |= Qt.WindowType.WindowTransparentForInput
@@ -503,6 +552,10 @@ class LyricsWidget(QWidget):
         self.setWindowFlags(current_flags)
         if was_visible:
             self.show()
+            if always_top:
+                self.raise_()
+            elif always_bottom:
+                self.lower()
 
         # Windows Screen Capture Exclusion (SetWindowDisplayAffinity)
         exclude_capture = s.get("exclude_from_capture", False)
@@ -519,9 +572,10 @@ class LyricsWidget(QWidget):
                     # Fallback to WDA_MONITOR for older Windows builds
                     ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000001)
 
-                # Standard Windows Extended Styles & Topmost Z-Order
+                # Standard Windows Extended Styles & Z-Order
                 apply_native_overlay_styles(
                     hwnd,
+                    layer_mode=layer_mode,
                     always_on_top=always_top,
                     click_through=click_through,
                     no_activate=True
@@ -529,8 +583,13 @@ class LyricsWidget(QWidget):
             except Exception as e:
                 log_event(f"[Lyrics Native Overlay Error] {e}")
 
-        if hasattr(self, 'action_top'):
-            self.action_top.setChecked(always_top)
+        # Linux / Hyprland Compositor Sync (Enforces float, pin, geometry)
+        QTimer.singleShot(80, lambda: sync_hyprland_window("Lyrune Lyrics Overlay", layer_mode=layer_mode, target_pos=self.pos(), target_size=self.size()))
+
+        if hasattr(self, 'action_layer_top'):
+            self.action_layer_top.setChecked(layer_mode == "Top")
+            self.action_layer_normal.setChecked(layer_mode == "Normal")
+            self.action_layer_bottom.setChecked(layer_mode == "Bottom")
 
         locked = s.get("lock_position", False)
         if hasattr(self, 'action_lock'):
@@ -545,6 +604,14 @@ class LyricsWidget(QWidget):
             align_flag = Qt.AlignmentFlag.AlignCenter
         self.sub_label.setAlignment(align_flag)
 
+        font_family = s.get("font_family", "Segoe UI")
+        font_size = s.get("font_size", 24)
+        font_bold = s.get("font_bold", True)
+
+        weight = QFont.Weight.Bold if font_bold else QFont.Weight.Normal
+        self.main_font = QFont(font_family, font_size, weight)
+
+        text_color = s.get("text_color", "#FFFFFF")
         bg_color = s.get("bg_color", "#000000")
         bg_opacity = s.get("bg_opacity", 0)
 
@@ -564,6 +631,18 @@ class LyricsWidget(QWidget):
         if hasattr(self, 'renderer'):
             self.renderer.update_style(s)
 
+        # Update Dimensions & Position if changed
+        w = s.get("window_width")
+        h = s.get("window_height")
+        if w and h and (self.width() != w or self.height() != h):
+            self.resize(w, h)
+
+        x = s.get("window_x")
+        y = s.get("window_y")
+        if x is not None and y is not None and x >= 0 and y >= 0:
+            if self.pos().x() != x or self.pos().y() != y:
+                self.move(x, y)
+
         # Update shortcuts dynamically
         self._update_shortcuts_from_settings(s)
 
@@ -572,21 +651,16 @@ class LyricsWidget(QWidget):
             self.visualizer_manager.apply_settings(s)
             if hasattr(self, 'action_vis_enable'):
                 self.action_vis_enable.setChecked(s.get("visualizer_enabled", True))
-            if hasattr(self, 'action_vis_top'):
-                self.action_vis_top.setChecked(s.get("visualizer_always_on_top", True))
+            vis_layer = s.get("visualizer_window_layer_mode", "Top" if s.get("visualizer_always_on_top", True) else "Normal")
+            if hasattr(self, 'action_vis_layer_top'):
+                self.action_vis_layer_top.setChecked(vis_layer == "Top")
+                self.action_vis_layer_normal.setChecked(vis_layer == "Normal")
+                self.action_vis_layer_bottom.setChecked(vis_layer == "Bottom")
             if hasattr(self, 'action_vis_click_through'):
                 self.action_vis_click_through.setChecked(s.get("visualizer_click_through", False))
 
     def _update_widget_border(self, bg_rgba: Optional[str] = None, border: bool = False):
-        """Sets the translucent background via a *constant* stylesheet.
-
-        The border itself is drawn in paintEvent (see below) instead of being
-        toggled in the stylesheet. Toggling a stylesheet border on a frameless
-        translucent window can trigger a style-change/re-layout cascade on some
-        Windows systems, which makes the overlay appear to jump by a pixel or two
-        on hover. Keeping the stylesheet identical across hover states means hover
-        only ever causes a repaint — never a geometry/style change.
-        """
+        """Sets the translucent background via a *constant* stylesheet."""
         if bg_rgba is None:
             bg_rgba = getattr(self, '_base_bg_rgba', 'transparent')
         self._border_visible = bool(border)
@@ -623,12 +697,17 @@ class LyricsWidget(QWidget):
         if hasattr(self, 'visualizer_manager'):
             self.visualizer_manager.update_playback_state(info)
 
+        layer_mode = self.settings_mgr.get("window_layer_mode", "Top" if self.settings_mgr.get("always_on_top", True) else "Normal")
+
         # Windows Z-guard: maintain topmost Z-order above fullscreen games without stealing focus
-        if sys.platform == "win32" and self.isVisible() and self.settings_mgr.get("always_on_top", True):
+        if sys.platform == "win32" and self.isVisible() and layer_mode == "Top":
             hwnd = int(self.winId()) if self.winId() else 0
             vis_hwnd = int(self.visualizer_manager.window.winId()) if hasattr(self, 'visualizer_manager') and self.visualizer_manager.window.winId() else 0
             if hwnd and (is_window_below_any_topmost(hwnd, excluded_hwnds=[vis_hwnd]) or is_window_below_foreground(hwnd)):
                 reassert_window_topmost(hwnd)
+        elif self.isVisible() and layer_mode == "Bottom":
+            # Ensure background overlay remains at bottom
+            self.lower()
 
         if not info['is_running'] or not info['title']:
             self.renderer.set_status("Waiting for Spotify...")
@@ -835,10 +914,14 @@ class LyricsWidget(QWidget):
             self.settings_dialog.raise_()
             self.settings_dialog.activateWindow()
 
-    def _toggle_always_on_top(self, checked: bool):
-        self.settings_mgr.set("always_on_top", checked)
-        self.action_top.setIcon(get_icon("pin_fill" if checked else "pin"))
+    def _set_layer_mode_from_tray(self, mode: str):
+        self.settings_mgr.set("window_layer_mode", mode)
+        self.settings_mgr.set("always_on_top", mode == "Top")
         self._apply_settings(self.settings_mgr.settings)
+
+    def _toggle_always_on_top(self, checked: bool):
+        mode = "Top" if checked else "Normal"
+        self._set_layer_mode_from_tray(mode)
 
     def _toggle_lock_position(self, checked: bool):
         self.settings_mgr.set("lock_position", checked)
@@ -867,9 +950,14 @@ class LyricsWidget(QWidget):
             self.action_vis_mode_normal.setChecked(new_mode == "Normal")
             self.action_vis_mode_game.setChecked(new_mode == "Game Overlay")
 
-    def _toggle_visualizer_top_from_tray(self, checked: bool):
-        self.settings_mgr.set("visualizer_always_on_top", checked)
+    def _set_visualizer_layer_mode_from_tray(self, mode: str):
+        self.settings_mgr.set("visualizer_window_layer_mode", mode)
+        self.settings_mgr.set("visualizer_always_on_top", mode == "Top")
         self.visualizer_manager.apply_settings(self.settings_mgr.settings)
+
+    def _toggle_visualizer_top_from_tray(self, checked: bool):
+        mode = "Top" if checked else "Normal"
+        self._set_visualizer_layer_mode_from_tray(mode)
 
     def _toggle_visualizer_click_through_from_tray(self, checked: bool):
         self.settings_mgr.set("visualizer_click_through", checked)
