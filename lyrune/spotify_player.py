@@ -528,12 +528,12 @@ class SpotifyPlayer(QObject):
             return None
         try:
             import winrt.windows.storage.streams as streams
-            stream = await asyncio.wait_for(stream_ref.open_read_async(), timeout=0.3)
+            stream = await asyncio.wait_for(stream_ref.open_read_async(), timeout=1.5)
             if not stream or stream.size == 0:
                 return None
             size = stream.size
             reader = streams.DataReader(stream.get_input_stream_at(0))
-            await asyncio.wait_for(reader.load_async(size), timeout=0.3)
+            await asyncio.wait_for(reader.load_async(size), timeout=1.5)
             buf = bytearray(size)
             reader.read_bytes(buf)
             return bytes(buf)
@@ -594,19 +594,17 @@ class SpotifyPlayer(QObject):
                         if 'spotify' in app_id and not c_tit:
                             spotify_empty_session_found = True
 
-                        # Rate session quality:
-                        # Quality 3 = Playing with both artist & title (or Spotify app)
-                        # Quality 2 = Paused with both artist & title (or Spotify app)
-                        # Quality 1 = Playing with title only (e.g. browser tab)
-                        # Quality 0 = Paused with title only
+                        # Filter sessions for Auto-Detect:
+                        # Music sessions have both artist and title, or come from a dedicated music player (Spotify).
+                        # Generic browser tabs without artist (e.g. Instagram, Reddit, Gmail) are ignored.
                         has_artist = bool(c_art or p_artist)
                         is_spotify = 'spotify' in app_id
                         is_music = has_artist or is_spotify
 
-                        if is_music:
-                            quality = 3 if status_num == 4 else 2
-                        else:
-                            quality = 1 if status_num == 4 else 0
+                        if self._target_source == "Auto-Detect" and not is_music:
+                            continue
+
+                        quality = 3 if status_num == 4 else 2
 
                         # Target source matching
                         if self._target_source != "Auto-Detect":
@@ -731,15 +729,33 @@ class SpotifyPlayer(QObject):
             # Fetch artwork asynchronously outside the state lock if needed
             if need_fetch_art:
                 fetched_art = None
-                if props and hasattr(props, 'thumbnail') and props.thumbnail:
-                    try:
-                        fetched_art = await self._extract_stream_bytes_async(props.thumbnail)
-                    except Exception:
-                        fetched_art = None
+                active_app_id = getattr(session, 'source_app_user_model_id', '').lower() if session else ''
+                is_browser = any(b in active_app_id for b in ['brave', 'chrome', 'edge', 'firefox', 'opera', '_crx_'])
+
+                # Browsers (Brave, Chrome, Edge) put the browser app icon (e.g. Brave lion) in thumbnail.
+                # Only use native GSMTC thumbnail for dedicated music apps like Spotify desktop.
+                if not is_browser:
+                    curr_props = props
+                    if (not curr_props or not getattr(curr_props, 'thumbnail', None)) and session:
+                        try:
+                            curr_props = await session.try_get_media_properties_async()
+                        except Exception:
+                            pass
+
+                    if curr_props and hasattr(curr_props, 'thumbnail') and curr_props.thumbnail:
+                        try:
+                            fetched_art = await self._extract_stream_bytes_async(curr_props.thumbnail)
+                        except Exception:
+                            fetched_art = None
+
                 with self._state_lock:
-                    self._last_art_track_id = track_id
-                    self._cached_art_bytes = fetched_art
-                    art_bytes = fetched_art
+                    if fetched_art:
+                        self._last_art_track_id = track_id
+                        self._cached_art_bytes = fetched_art
+                        art_bytes = fetched_art
+                    else:
+                        self._cached_art_bytes = None
+                        art_bytes = None
 
             # Throttled status logging — only log on status change
             if status_str != self._last_logged_status:

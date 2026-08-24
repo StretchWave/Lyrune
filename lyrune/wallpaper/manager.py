@@ -19,13 +19,13 @@ import time
 from typing import Optional, Dict, Any
 
 from PyQt6.QtCore import Qt, QObject, QTimer, QRect, pyqtSignal
-from PyQt6.QtGui import QPainter, QColor, QPixmap
+from PyQt6.QtGui import QPainter, QColor, QPixmap, QImage
 from PyQt6.QtWidgets import QWidget, QApplication
 
 from lyrune.logger import log_event
 from lyrune.settings_manager import SettingsManager
 from lyrune.wallpaper.model import WallpaperConfig, MediaSnapshot, WallpaperOwnershipState
-from lyrune.wallpaper.image_cache import AlbumArtCache
+from lyrune.wallpaper.image_cache import AlbumArtCache, fetch_album_art_online
 from lyrune.wallpaper.vinyl_renderer import VinylRenderer
 from lyrune.wallpaper.static_renderer import StaticWallpaperRenderer
 from lyrune.wallpaper.monitor import get_monitor_by_name, MonitorInfo
@@ -76,10 +76,12 @@ class WallpaperManager(QObject):
     vinyl animation, and media state tracking.
     """
     wallpaper_state_changed = pyqtSignal(bool)  # enabled/disabled
+    _art_fetched_signal = pyqtSignal(str, bytes)  # (track_id, art_bytes)
 
     def __init__(self, settings_manager: SettingsManager, parent=None):
         super().__init__(parent)
         self.settings_mgr = settings_manager
+        self._art_fetched_signal.connect(self._on_online_art_fetched)
 
         # Configuration
         self._config = WallpaperConfig.from_settings(settings_manager.settings)
@@ -87,6 +89,7 @@ class WallpaperManager(QObject):
         # Components
         self._host = None                    # WindowsDesktopHost (lazy init)
         self._canvas: Optional[WallpaperCanvas] = None
+        self._native_surface = None          # NativeDesktopProbe (pure Win32 surface)
         self._active_renderer = None         # BaseWallpaperRenderer
         self._vinyl_renderer = VinylRenderer()
         self._album_art_cache = AlbumArtCache(max_entries=10)
@@ -153,8 +156,8 @@ class WallpaperManager(QObject):
 
     def start(self) -> bool:
         """
-        Starts the wallpaper system.
-        Sets up the desktop host, creates the canvas, and starts rendering.
+        Starts the desktop wallpaper system using the proven native Win32 host surface
+        driven by QPainter QImage rendering.
         """
         if sys.platform != "win32":
             log_event("[WallpaperManager] Wallpaper is only supported on Windows.")
@@ -163,65 +166,35 @@ class WallpaperManager(QObject):
         if not self._config.enabled:
             return False
 
-        log_event("[WallpaperManager] Starting wallpaper system...")
+        log_event("[WallpaperManager] Starting native desktop wallpaper surface...")
 
-        # Initialize Windows host
-        if self._host is None:
-            from lyrune.wallpaper.windows_host import WindowsDesktopHost
-            self._host = WindowsDesktopHost()
-
-        # Atomic setup: Capture original -> apply neutral fallback -> spawn WorkerW
-        if not self._host.setup_with_fallback():
-            log_event("[WallpaperManager] Desktop host setup with fallback failed.")
+        from lyrune.wallpaper.win32_probe import NativeDesktopProbe
+        self._native_surface = NativeDesktopProbe()
+        if not self._native_surface.start():
+            log_event("[WallpaperManager] Failed to start native desktop host surface.")
             return False
 
-        # Resolve target monitor
-        self._current_monitor = get_monitor_by_name(self._config.display_mode)
-        if self._current_monitor:
-            self._monitor_geometry = self._current_monitor.geometry
-        else:
-            # Fallback to primary screen
-            primary = QApplication.primaryScreen()
-            self._monitor_geometry = primary.geometry() if primary else QRect(0, 0, 1920, 1080)
+        # Resolve target monitor physical surface geometry
+        surf_w, surf_h = self._native_surface.get_surface_size()
+        self._monitor_geometry = QRect(0, 0, surf_w, surf_h)
+        log_event(f"[WallpaperManager] Physical wallpaper surface size: {surf_w}x{surf_h}")
 
-        # Create the canvas widget
-        if self._canvas is None:
-            self._canvas = WallpaperCanvas(self)
-
-        self._canvas.setGeometry(self._monitor_geometry)
-        self._canvas.setFixedSize(self._monitor_geometry.width(), self._monitor_geometry.height())
-
-        # Start the background renderer so pixmaps and render pipelines are active
+        # Initialize background renderer
         self._start_renderer()
 
-        # Show the canvas first to realize native HWND
-        self._canvas.show()
-
-        # Embed into the desktop WorkerW
-        if not self._host.embed_widget(self._canvas, self._monitor_geometry):
-            log_event("[WallpaperManager] Failed to embed canvas into desktop. Rolling back.")
-            self._host.detach_and_restore()
-            return False
-
-        # Mark active
-        self._host.set_state(WallpaperOwnershipState.LYRUNE_ACTIVE)
-
-        # Force immediate canvas repaint
-        self._canvas.update()
-        self._canvas.repaint()
-
-        # Start animation timers
-        self._rotation_base_time = time.monotonic()
-        self._rotation_base_angle = self._rotation_angle
-        self._render_timer.start()
+        # Start render & host validation timers
+        self._render_timer.start(33)
         self._host_check_timer.start()
 
-        log_event("[WallpaperManager] Wallpaper system started successfully.")
+        # Initial frame render
+        self._on_render_tick()
+
+        log_event("[WallpaperManager] Native desktop wallpaper surface active.")
         return True
 
     def stop(self) -> None:
         """
-        Stops the wallpaper system and restores the user's original wallpaper.
+        Stops the wallpaper system.
         """
         log_event("[WallpaperManager] Stopping wallpaper system...")
 
@@ -229,24 +202,10 @@ class WallpaperManager(QObject):
         self._render_timer.stop()
         self._host_check_timer.stop()
 
-        # Stop renderer
-        if self._active_renderer:
-            self._active_renderer.stop()
-            self._active_renderer = None
-
-        # Detach and restore
-        if self._host:
-            self._host.detach_and_restore()
-
-        # Clean up canvas
-        if self._canvas:
-            self._canvas.hide()
-            self._canvas.setParent(None)
-            self._canvas.deleteLater()
-            self._canvas = None
-
-        self._use_static_paint = True
-        self._use_video_mode = False
+        # Clean up native surface
+        if getattr(self, "_native_surface", None):
+            self._native_surface.stop()
+            self._native_surface = None
 
         log_event("[WallpaperManager] Wallpaper system stopped.")
         self.wallpaper_state_changed.emit(False)
@@ -294,24 +253,26 @@ class WallpaperManager(QObject):
             self._media.track_id = track_id
             log_event(f"[WallpaperManager] Track changed: '{artist} - {title}'")
 
-            # Album art update
+            # Reset art immediately for new track
             if art_bytes:
                 pixmap = self._album_art_cache.decode_and_cache(art_bytes)
                 if pixmap:
                     self._media.album_art = pixmap
                     self._media.album_art_bytes = art_bytes
                     self._vinyl_renderer.set_album_art(pixmap)
+                else:
+                    self._fetch_art_async(track_id, artist, title)
             else:
-                self._vinyl_renderer.set_album_art(None)
-                self._media.album_art = None
-                self._media.album_art_bytes = None
-        elif track_id == self._last_track_id and art_bytes and art_bytes != self._media.album_art_bytes:
-            # Same track but new art (e.g., delayed thumbnail load)
-            pixmap = self._album_art_cache.decode_and_cache(art_bytes)
-            if pixmap:
-                self._media.album_art = pixmap
-                self._media.album_art_bytes = art_bytes
-                self._vinyl_renderer.set_album_art(pixmap)
+                self._fetch_art_async(track_id, artist, title)
+        elif track_id == self._last_track_id and track_id:
+            if art_bytes and art_bytes != self._media.album_art_bytes:
+                pixmap = self._album_art_cache.decode_and_cache(art_bytes)
+                if pixmap:
+                    self._media.album_art = pixmap
+                    self._media.album_art_bytes = art_bytes
+                    self._vinyl_renderer.set_album_art(pixmap)
+            elif not self._media.album_art:
+                self._fetch_art_async(track_id, artist, title)
 
         # Update playback status
         old_status = self._media.status
@@ -330,6 +291,33 @@ class WallpaperManager(QObject):
             elif status != "Playing" and self._is_rotating and self._config.pause_on_music_pause:
                 self._pause_rotation()
 
+    def _fetch_art_async(self, track_id: str, artist: str, title: str) -> None:
+        """Fetches high-resolution album artwork in the background if GSMTC provided none."""
+        if not artist or not title:
+            return
+
+        import threading
+        def _worker():
+            art = fetch_album_art_online(artist, title)
+            if art:
+                self._art_fetched_signal.emit(track_id, art)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_online_art_fetched(self, track_id: str, art_bytes: bytes) -> None:
+        """Called on main thread when online album art is ready."""
+        if not art_bytes:
+            return
+        curr_id = f"{self._media.artist} - {self._media.title}".strip()
+        if curr_id != track_id and self._media.track_id != track_id:
+            return
+        pixmap = self._album_art_cache.decode_and_cache(art_bytes)
+        if pixmap:
+            self._media.album_art = pixmap
+            self._media.album_art_bytes = art_bytes
+            self._vinyl_renderer.set_album_art(pixmap)
+            log_event(f"[WallpaperManager] Online album art loaded for '{track_id}' ({len(art_bytes)} bytes)")
+
     def get_config(self) -> WallpaperConfig:
         """Returns the current wallpaper configuration."""
         return self._config
@@ -341,9 +329,7 @@ class WallpaperManager(QObject):
     def is_active(self) -> bool:
         """Returns True if the wallpaper is currently rendering."""
         return (self._config.enabled and
-                self._host is not None and
-                self._host.is_active and
-                self._canvas is not None)
+                self._native_surface is not None)
 
     # === Internal Rendering ===
 
@@ -458,9 +444,12 @@ class WallpaperManager(QObject):
     # === Animation ===
 
     def _on_render_tick(self) -> None:
-        """30 FPS render tick — updates rotation and triggers repaint."""
+        """30 FPS render tick — renders wallpaper + vinyl using QPainter into QImage and blits to native surface."""
+        if not self._native_surface:
+            return
+
         now = time.monotonic()
-        dt = 1.0 / 30.0  # Approximate dt
+        dt = 1.0 / 30.0
 
         # Update rotation (time-based)
         if self._is_rotating and self._config.rotation_speed > 0:
@@ -473,13 +462,39 @@ class WallpaperManager(QObject):
         # Advance crossfade
         self._vinyl_renderer.advance_crossfade(dt)
 
-        # Repaint only if something is changing
-        if self._canvas and (
-            self._is_rotating or
-            self._vinyl_renderer.is_crossfading or
-            self._use_static_paint
-        ):
-            self._canvas.update()
+        w, h = self._native_surface.get_surface_size()
+        rect = QRect(0, 0, w, h)
+
+        img = QImage(w, h, QImage.Format.Format_RGB32)
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        # 1. Background static wallpaper
+        if self._active_renderer and self._use_static_paint:
+            self._active_renderer.paint(painter, rect)
+        else:
+            painter.fillRect(rect, QColor(0, 0, 0))
+
+        # 2. Vinyl record overlay
+        center_x = self._config.vinyl_x * w
+        center_y = self._config.vinyl_y * h
+        diameter = self._config.vinyl_size * min(w, h)
+
+        self._vinyl_renderer.render(
+            painter,
+            center_x, center_y,
+            diameter,
+            self._rotation_angle,
+            self._config.vinyl_opacity,
+            self._config,
+            self._media,
+        )
+
+        painter.end()
+
+        # Transfer frame to proven native desktop host surface
+        self._native_surface.render_image(img)
 
     def _start_rotation(self) -> None:
         """Starts vinyl rotation from the current angle."""

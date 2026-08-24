@@ -100,7 +100,8 @@ class VinylRenderer:
         painter.setOpacity(alpha / 255.0)
 
         radius = diameter / 2.0
-        label_radius = radius * 0.38  # Album art label is ~38% of record radius
+        label_ratio = getattr(config, 'vinyl_label_ratio', 38.0) / 100.0
+        label_radius = radius * max(0.10, min(0.85, label_ratio))
 
         # === Drop Shadow ===
         self._draw_shadow(painter, center_x, center_y, radius)
@@ -127,8 +128,8 @@ class VinylRenderer:
         # Un-rotate for text (text should not rotate)
         painter.rotate(-angle)
 
-        # === Song Metadata Text (below the record) ===
-        if config.show_title or config.show_artist:
+        # === Song Metadata Text ===
+        if (config.show_title or config.show_artist) and getattr(config, 'text_position', 'Below') != 'Hidden':
             self._draw_metadata(painter, radius, config, media)
 
         painter.translate(-center_x, -center_y)
@@ -138,33 +139,31 @@ class VinylRenderer:
                      radius: float) -> None:
         """Draws a soft drop shadow beneath the record."""
         shadow_offset = radius * 0.03
-        shadow_radius = radius * 1.04
-
-        gradient = QRadialGradient(
-            QPointF(cx + shadow_offset, cy + shadow_offset * 2),
-            shadow_radius
+        shadow_gradient = QRadialGradient(
+            QPointF(cx + shadow_offset, cy + shadow_offset),
+            radius * 1.08
         )
-        gradient.setColorAt(0.0, QColor(0, 0, 0, 60))
-        gradient.setColorAt(0.7, QColor(0, 0, 0, 25))
-        gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
+        shadow_gradient.setColorAt(0.0, QColor(0, 0, 0, 90))
+        shadow_gradient.setColorAt(0.7, QColor(0, 0, 0, 45))
+        shadow_gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
 
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(gradient))
+        painter.setBrush(QBrush(shadow_gradient))
         painter.drawEllipse(
-            QPointF(cx + shadow_offset, cy + shadow_offset * 2),
-            shadow_radius, shadow_radius
+            QPointF(cx + shadow_offset, cy + shadow_offset),
+            radius * 1.08, radius * 1.08
         )
 
     def _draw_record_surface(self, painter: QPainter, radius: float) -> None:
-        """Draws the dark vinyl record surface with a subtle radial gradient."""
-        gradient = QRadialGradient(QPointF(0, 0), radius)
-        gradient.setColorAt(0.0, QColor(35, 35, 40))
-        gradient.setColorAt(0.35, QColor(25, 25, 30))
-        gradient.setColorAt(0.85, QColor(18, 18, 22))
-        gradient.setColorAt(1.0, QColor(12, 12, 15))
+        """Draws the dark vinyl record base with radial sheen."""
+        base_gradient = QRadialGradient(QPointF(0, 0), radius)
+        base_gradient.setColorAt(0.0, QColor(25, 25, 28))
+        base_gradient.setColorAt(0.5, QColor(18, 18, 20))
+        base_gradient.setColorAt(0.85, QColor(12, 12, 14))
+        base_gradient.setColorAt(1.0, QColor(8, 8, 10))
 
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(gradient))
+        painter.setBrush(QBrush(base_gradient))
         painter.drawEllipse(QPointF(0, 0), radius, radius)
 
         # Subtle edge ring
@@ -176,10 +175,12 @@ class VinylRenderer:
     def _draw_grooves(self, painter: QPainter, radius: float,
                       label_radius: float) -> None:
         """Draws concentric groove rings on the record surface."""
-        groove_start = label_radius + radius * 0.05
-        groove_end = radius * 0.92
-        groove_count = int((groove_end - groove_start) / (radius * 0.018))
-        groove_count = max(8, min(groove_count, 50))
+        groove_start = label_radius + radius * 0.03
+        groove_end = radius * 0.94
+        if groove_end <= groove_start:
+            return
+        groove_count = int((groove_end - groove_start) / max(2.0, radius * 0.018))
+        groove_count = max(6, min(groove_count, 60))
 
         groove_pen = QPen(QColor(255, 255, 255, 8), 0.5)
         painter.setPen(groove_pen)
@@ -203,35 +204,35 @@ class VinylRenderer:
         painter.drawEllipse(QPointF(0, 0), label_radius, label_radius)
 
         # Draw album art (clipped to circle)
-        art_to_draw = self._current_art if self._current_art else None
+        art_to_draw = self._current_art or media.album_art
         old_art = self._previous_art if self.is_crossfading else None
 
         if old_art or art_to_draw:
-            # Create circular clip path
             clip_path = QPainterPath()
-            clip_path.addEllipse(QPointF(0, 0), label_radius - 2, label_radius - 2)
+            clip_path.addEllipse(QPointF(0, 0), max(1.0, label_radius - 2), max(1.0, label_radius - 2))
 
             painter.save()
             painter.setClipPath(clip_path)
 
             art_rect = QRectF(
                 -label_radius + 2, -label_radius + 2,
-                (label_radius - 2) * 2, (label_radius - 2) * 2
+                max(2.0, (label_radius - 2) * 2), max(2.0, (label_radius - 2) * 2)
             )
 
             # Draw previous art (fading out)
             if old_art and self.is_crossfading:
-                painter.setOpacity(painter.opacity() * (1.0 - self._crossfade_progress))
+                painter.save()
+                painter.setOpacity(painter.opacity() * max(0.0, 1.0 - self._crossfade_progress))
                 painter.drawPixmap(art_rect.toRect(), old_art)
-                painter.setOpacity(painter.opacity() / max(0.01, 1.0 - self._crossfade_progress))
+                painter.restore()
 
             # Draw current art (fading in)
             if art_to_draw:
+                painter.save()
                 if self.is_crossfading:
-                    painter.setOpacity(painter.opacity() * self._crossfade_progress)
+                    painter.setOpacity(painter.opacity() * max(0.0, min(1.0, self._crossfade_progress)))
                 painter.drawPixmap(art_rect.toRect(), art_to_draw)
-                if self.is_crossfading:
-                    painter.setOpacity(painter.opacity() / max(0.01, self._crossfade_progress))
+                painter.restore()
 
             painter.restore()
         else:
@@ -247,11 +248,10 @@ class VinylRenderer:
     def _draw_art_placeholder(self, painter: QPainter, label_radius: float,
                                media: MediaSnapshot) -> None:
         """Draws a placeholder label when no album art is available."""
-        # Music note icon as placeholder
-        font = QFont("Segoe UI", int(label_radius * 0.4))
+        font = QFont("Segoe UI", max(8, int(label_radius * 0.4)))
         font.setBold(True)
         painter.setFont(font)
-        painter.setPen(QPen(QColor(120, 120, 130)))
+        painter.setPen(QPen(QColor(140, 140, 150)))
         painter.drawText(
             QRectF(-label_radius, -label_radius * 0.6, label_radius * 2, label_radius * 1.2),
             Qt.AlignmentFlag.AlignCenter,
@@ -262,7 +262,7 @@ class VinylRenderer:
         if media.title:
             small_font = QFont("Segoe UI", max(6, int(label_radius * 0.12)))
             painter.setFont(small_font)
-            painter.setPen(QPen(QColor(100, 100, 110)))
+            painter.setPen(QPen(QColor(120, 120, 130)))
             text = media.title[:20]
             painter.drawText(
                 QRectF(-label_radius * 0.8, label_radius * 0.15,
@@ -273,7 +273,6 @@ class VinylRenderer:
 
     def _draw_spindle(self, painter: QPainter) -> None:
         """Draws the center spindle hole/dot."""
-        # Spindle hole
         painter.setPen(Qt.PenStyle.NoPen)
         spindle_gradient = QRadialGradient(QPointF(0, 0), 6)
         spindle_gradient.setColorAt(0.0, QColor(15, 15, 18))
@@ -282,7 +281,6 @@ class VinylRenderer:
         painter.setBrush(QBrush(spindle_gradient))
         painter.drawEllipse(QPointF(0, 0), 5, 5)
 
-        # Spindle ring
         ring_pen = QPen(QColor(80, 80, 85, 150), 1.0)
         painter.setPen(ring_pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -318,46 +316,67 @@ class VinylRenderer:
 
     def _draw_metadata(self, painter: QPainter, radius: float,
                        config: WallpaperConfig, media: MediaSnapshot) -> None:
-        """Draws song title and artist text below the vinyl record."""
+        """Draws song title and artist text positioned relative to the vinyl record."""
         if not media.has_track:
             return
 
-        text_y_start = radius + radius * 0.12
-        max_text_width = radius * 2.0
+        pos = getattr(config, 'text_position', 'Below')
+        if pos == 'Hidden':
+            return
 
-        # Title
+        title_size = getattr(config, 'title_font_size', 14)
+        artist_size = getattr(config, 'artist_font_size', 11)
+        align_str = getattr(config, 'text_alignment', 'Center')
+
+        if align_str == "Left":
+            align_flag = Qt.AlignmentFlag.AlignLeft
+        elif align_str == "Right":
+            align_flag = Qt.AlignmentFlag.AlignRight
+        else:
+            align_flag = Qt.AlignmentFlag.AlignHCenter
+
+        color_str = getattr(config, 'text_color', '#FFFFFF')
+        base_color = QColor(color_str)
+        if not base_color.isValid():
+            base_color = QColor('#FFFFFF')
+
+        title_font = QFont("Segoe UI", title_size)
+        title_font.setBold(True)
+        artist_font = QFont("Segoe UI", artist_size)
+
+        max_text_width = max(240.0, radius * 2.2)
+        total_text_height = (title_size * 1.5 if config.show_title and media.title else 0) + \
+                            (artist_size * 1.5 if config.show_artist and media.artist else 0)
+
+        gap = 16.0
+        if pos == "Above":
+            text_x = -max_text_width / 2.0
+            cur_y = -(radius + gap + total_text_height)
+        elif pos == "Left":
+            text_x = -(radius + gap + max_text_width)
+            cur_y = -total_text_height / 2.0
+        elif pos == "Right":
+            text_x = radius + gap
+            cur_y = -total_text_height / 2.0
+        else:  # Below
+            text_x = -max_text_width / 2.0
+            cur_y = radius + gap
+
+        # Draw Title
         if config.show_title and media.title:
-            title_font_size = max(10, int(radius * 0.09))
-            title_font = QFont("Segoe UI", title_font_size)
-            title_font.setBold(True)
             painter.setFont(title_font)
-
-            # Truncate if needed
             fm = QFontMetrics(title_font)
-            title_text = fm.elidedText(media.title, Qt.TextElideMode.ElideRight,
-                                       int(max_text_width))
+            title_text = fm.elidedText(media.title, Qt.TextElideMode.ElideRight, int(max_text_width))
+            painter.setPen(QPen(QColor(base_color.red(), base_color.green(), base_color.blue(), 235)))
+            title_rect = QRectF(text_x, cur_y, max_text_width, title_size * 1.6)
+            painter.drawText(title_rect, align_flag | Qt.AlignmentFlag.AlignTop, title_text)
+            cur_y += title_size * 1.5
 
-            painter.setPen(QPen(QColor(255, 255, 255, 220)))
-            title_rect = QRectF(-max_text_width / 2, text_y_start,
-                               max_text_width, title_font_size * 1.6)
-            painter.drawText(title_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
-                           title_text)
-
-            text_y_start += title_font_size * 1.5
-
-        # Artist
+        # Draw Artist
         if config.show_artist and media.artist:
-            artist_font_size = max(8, int(radius * 0.07))
-            artist_font = QFont("Segoe UI", artist_font_size)
             painter.setFont(artist_font)
-
             fm = QFontMetrics(artist_font)
-            artist_text = fm.elidedText(media.artist, Qt.TextElideMode.ElideRight,
-                                        int(max_text_width))
-
-            painter.setPen(QPen(QColor(255, 255, 255, 140)))
-            artist_rect = QRectF(-max_text_width / 2, text_y_start,
-                                max_text_width, artist_font_size * 1.6)
-            painter.drawText(artist_rect,
-                           Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
-                           artist_text)
+            artist_text = fm.elidedText(media.artist, Qt.TextElideMode.ElideRight, int(max_text_width))
+            painter.setPen(QPen(QColor(base_color.red(), base_color.green(), base_color.blue(), 170)))
+            artist_rect = QRectF(text_x, cur_y, max_text_width, artist_size * 1.6)
+            painter.drawText(artist_rect, align_flag | Qt.AlignmentFlag.AlignTop, artist_text)

@@ -153,7 +153,7 @@ class WallpaperPreviewWidget(QWidget):
         # Vinyl
         center_x = self._config.vinyl_x * w
         center_y = self._config.vinyl_y * h
-        diameter = self._config.vinyl_size * w
+        diameter = self._config.vinyl_size * min(w, h)
 
         self._vinyl_renderer.render(
             painter, center_x, center_y, diameter,

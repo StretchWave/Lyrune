@@ -5,6 +5,7 @@ Provides LRU-evicting caches to prevent redundant image decoding.
 All cache access is thread-safe via threading.Lock.
 """
 
+import os
 import hashlib
 import threading
 from collections import OrderedDict
@@ -195,3 +196,83 @@ def scale_image_to_mode(source: QPixmap, target_width: int, target_height: int,
 
     painter.end()
     return result
+
+
+def fetch_album_art_online(artist: str, title: str) -> Optional[bytes]:
+    """
+    Fetches high-resolution album cover artwork from iTunes Search API / Deezer API.
+    Used for web browsers (Brave, Chrome, Edge) and media players where Windows GSMTC
+    does not provide a direct thumbnail stream.
+    Caches results to disk (.lyrics_cache/art_<hash>.jpg).
+    """
+    if not artist and not title:
+        return None
+
+    # Disk cache check
+    cache_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".lyrics_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_key = hashlib.md5(f"{artist.lower().strip()} - {title.lower().strip()}".encode('utf-8')).hexdigest()
+    disk_path = os.path.join(cache_dir, f"art_{cache_key}.jpg")
+
+    if os.path.isfile(disk_path) and os.path.getsize(disk_path) > 0:
+        try:
+            with open(disk_path, "rb") as f:
+                return f.read()
+        except Exception:
+            pass
+
+    import urllib.request
+    import urllib.parse
+    import json
+
+    # 1. Try iTunes Search API
+    try:
+        clean_artist = artist.split(',')[0].strip()  # If multiple artists, use primary for cleaner query
+        clean_title = title.split('(')[0].split('-')[0].strip()
+        query = f"{clean_artist} {clean_title}".strip()
+        url = f"https://itunes.apple.com/search?term={urllib.parse.quote(query)}&entity=song&limit=1"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            results = data.get('results', [])
+            if results:
+                art_url = results[0].get('artworkUrl100', '')
+                if art_url:
+                    high_res = art_url.replace('100x100bb.jpg', '600x600bb.jpg').replace('100x100', '600x600')
+                    with urllib.request.urlopen(urllib.request.Request(high_res, headers={'User-Agent': 'Mozilla/5.0'}), timeout=3.0) as aresp:
+                        b = aresp.read()
+                        if b:
+                            try:
+                                with open(disk_path, "wb") as f:
+                                    f.write(b)
+                            except Exception:
+                                pass
+                            return b
+    except Exception:
+        pass
+
+    # 2. Try Deezer API Fallback
+    try:
+        q = f"{artist} {title}".strip()
+        url = f"https://api.deezer.com/search?q={urllib.parse.quote(q)}&limit=1"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            data_list = data.get('data', [])
+            if data_list:
+                album = data_list[0].get('album', {})
+                art_url = album.get('cover_big') or album.get('cover_medium') or album.get('cover')
+                if art_url:
+                    with urllib.request.urlopen(urllib.request.Request(art_url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=3.0) as aresp:
+                        b = aresp.read()
+                        if b:
+                            try:
+                                with open(disk_path, "wb") as f:
+                                    f.write(b)
+                            except Exception:
+                                pass
+                            return b
+    except Exception:
+        pass
+
+    return None

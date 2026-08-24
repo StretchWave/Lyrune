@@ -2,7 +2,7 @@ import re
 import sys
 from typing import Dict, Any, Optional, List
 from PyQt6.QtCore import (
-    Qt, QTimer, QPoint
+    Qt, QTimer, QPoint, QRect
 )
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QSizeGrip,
@@ -231,20 +231,24 @@ class LyricsWidget(QWidget):
         self._on_song_changed(artist, title)
 
     def _restore_window_position(self):
-        """Restores saved window position, or centers on screen if off-screen/first launch."""
+        """Restores saved window position across restarts with multi-monitor work-area safety."""
+        from lyrune.window_utils import get_screen_for_rect, constrain_to_work_area
         x = self.settings_mgr.get("window_x", -1)
         y = self.settings_mgr.get("window_y", -1)
-        screen_geo = QApplication.primaryScreen().availableGeometry()
 
-        if x >= 0 and y >= 0 and screen_geo.contains(QPoint(x, y)):
-            self.move(x, y)
+        if x is not None and y is not None and x >= -5000 and y >= -5000 and x != -1 and y != -1:
+            test_rect = QRect(x, y, self.width(), self.height())
+            screen = get_screen_for_rect(test_rect)
+            safe_pos = constrain_to_work_area(QPoint(x, y), self.size(), screen)
+            self.move(safe_pos)
         else:
-            # Default to bottom-center of primary screen
+            screen_geo = QApplication.primaryScreen().availableGeometry()
             cx = (screen_geo.width() - self.width()) // 2
             cy = screen_geo.height() - self.height() - 100
             self.move(cx, cy)
             self.settings_mgr.set("window_x", cx)
             self.settings_mgr.set("window_y", cy)
+            self.settings_mgr.save_immediate()
 
     def _init_system_tray(self):
         """Initializes the Windows System Tray Icon & Context Menu."""
@@ -933,7 +937,7 @@ class LyricsWidget(QWidget):
 
     def _open_settings(self):
         if self.settings_dialog is None:
-            self.settings_dialog = SettingsDialog(self.settings_mgr, player=self.player, parent=None)
+            self.settings_dialog = SettingsDialog(self.settings_mgr, player=self.player, parent=self)
             self.settings_dialog.settings_changed.connect(self._apply_settings)
             self.settings_dialog.show()
             self.settings_dialog.raise_()
@@ -1036,6 +1040,7 @@ class LyricsWidget(QWidget):
                 pos = self.pos()
                 self.settings_mgr.set("window_x", pos.x())
                 self.settings_mgr.set("window_y", pos.y())
+                self.settings_mgr.save_immediate()
                 self._apply_pending_resize()
         super().mouseReleaseEvent(event)
 

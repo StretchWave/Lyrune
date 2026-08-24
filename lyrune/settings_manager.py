@@ -101,9 +101,15 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "wallpaper_vinyl_y": 0.65,                # Normalized [0.0, 1.0]
     "wallpaper_vinyl_size": 0.20,             # Normalized diameter [0.05, 0.60]
     "wallpaper_vinyl_opacity": 100,           # 0 to 100%
+    "wallpaper_vinyl_label_ratio": 38.0,      # Album cover size as % of vinyl disc [10% to 80%]
     "wallpaper_rotation_speed": 12.0,         # Seconds per revolution
     "wallpaper_show_title": True,
     "wallpaper_show_artist": True,
+    "wallpaper_text_position": "Below",       # "Below", "Above", "Left", "Right", "Hidden"
+    "wallpaper_text_alignment": "Center",     # "Center", "Left", "Right"
+    "wallpaper_text_color": "#FFFFFF",        # Hex color
+    "wallpaper_title_font_size": 14,          # Song title font size pt
+    "wallpaper_artist_font_size": 11,         # Artist font size pt
     "wallpaper_rotate_while_playing": True,
     "wallpaper_pause_on_music_pause": True,
     "wallpaper_pause_on_battery": False,

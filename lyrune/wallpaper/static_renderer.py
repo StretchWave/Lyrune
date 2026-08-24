@@ -144,10 +144,13 @@ class StaticWallpaperRenderer(BaseWallpaperRenderer):
     def paint(self, painter: QPainter, rect: QRect) -> None:
         """
         Paints the cached wallpaper pixmap onto the given painter.
-        Called from the wallpaper canvas widget's paintEvent.
+        Fills the exact target rect in full physical pixel resolution.
         """
         if self._cached_pixmap and not self._cached_pixmap.isNull():
-            painter.drawPixmap(rect.topLeft(), self._cached_pixmap)
+            if self._geometry.size() != rect.size():
+                self._geometry = rect
+                self._render()
+            painter.drawPixmap(rect, self._cached_pixmap)
         else:
             # Fallback: black background
             painter.fillRect(rect, QColor(0, 0, 0))

@@ -17,7 +17,8 @@ import sys
 import os
 import ctypes
 from ctypes import wintypes
-from typing import Optional, Tuple, Dict
+from enum import Enum
+from typing import Optional, Tuple, Dict, List
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import QRect
 
@@ -26,6 +27,13 @@ from lyrune.wallpaper.model import OriginalWallpaperState, WallpaperOwnershipSta
 
 if sys.platform != "win32":
     raise ImportError("windows_host.py is only available on Windows")
+
+
+class DesktopHostMode(Enum):
+    """Windows desktop wallpaper hosting architecture mode."""
+    CLASSIC_WORKERW = "classic_workerw"
+    RAISED_DESKTOP = "raised_desktop"
+
 
 # ------------------------------------------------------------------
 # Win32 API setup — properly typed ctypes prototypes
@@ -204,6 +212,25 @@ user32.GetWindow.restype = wintypes.HWND
 GW_HWNDPREV = 3
 GW_HWNDNEXT = 2
 
+# SetLayeredWindowAttributes
+user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.COLORREF, wintypes.BYTE, wintypes.DWORD]
+user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
+
+class PAINTSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("hdc", wintypes.HDC),
+        ("fErase", wintypes.BOOL),
+        ("rcPaint", wintypes.RECT),
+        ("fRestore", wintypes.BOOL),
+        ("fIncUpdate", wintypes.BOOL),
+        ("rgbReserved", wintypes.BYTE * 32),
+    ]
+
+user32.BeginPaint.argtypes = [wintypes.HWND, ctypes.POINTER(PAINTSTRUCT)]
+user32.BeginPaint.restype = wintypes.HDC
+user32.EndPaint.argtypes = [wintypes.HWND, ctypes.POINTER(PAINTSTRUCT)]
+user32.EndPaint.restype = wintypes.BOOL
+
 # Win32 constants
 GWL_STYLE = -16
 GWL_EXSTYLE = -20
@@ -217,6 +244,10 @@ WS_EX_LAYERED = 0x00080000
 WS_EX_TRANSPARENT = 0x00000020
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_APPWINDOW = 0x00040000
+WS_EX_NOREDIRECTIONBITMAP = 0x00200000
+
+LWA_COLORKEY = 0x00000001
+LWA_ALPHA = 0x00000002
 
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
@@ -331,6 +362,8 @@ class WindowsDesktopHost:
         self._original_exstyle: int = 0
         self._original_wallpaper = OriginalWallpaperState()
         self._state: WallpaperOwnershipState = WallpaperOwnershipState.NATIVE_ORIGINAL
+        self._mode: DesktopHostMode = DesktopHostMode.CLASSIC_WORKERW
+        self._native_probe_hwnd: int = 0
         self._is_setup: bool = False
 
     @property
@@ -448,18 +481,20 @@ class WindowsDesktopHost:
 
     def setup_with_fallback(self) -> bool:
         """
-        Diagnostic mode: Keep user's original wallpaper active and run native WorkerW setup + probe.
-        (Temporarily disables black fallback per Sections 10 & 21 so original wallpaper vs MAGENTA is clear).
+        Executes atomic setup:
+          1. Detects host mode (CLASSIC_WORKERW or RAISED_DESKTOP).
+          2. Spawns WorkerW via mode-specific 0x052C sequence.
+          3. Identifies the correct wallpaper host window.
+          4. Runs mode-aware native Win32 MAGENTA probe.
         """
         try:
             # Capture original wallpaper first
             if not self._original_wallpaper.captured:
                 self.capture_original_wallpaper()
 
-            # Temporarily do NOT apply black fallback
+            # Temporarily retain original wallpaper during diagnostic probe
             log_event("[Wallpaper Host] Diagnostic mode: Original wallpaper retained as background.")
 
-            # Step 2: Setup WorkerW and native probe
             if not self.setup():
                 log_event("[Wallpaper Host] WorkerW setup failed.")
                 return False
@@ -470,48 +505,134 @@ class WindowsDesktopHost:
             log_event(f"[Wallpaper Host] setup_with_fallback failed: {e}")
             return False
 
-    def _inspect_z_order_above(self, hwnd: int) -> None:
-        """Walks upward in Z-order from hwnd and logs all windows sitting above it."""
+    def detect_desktop_host_mode(self, progman_hwnd: int) -> DesktopHostMode:
+        """
+        Detects whether the Windows desktop uses the classic top-level WorkerW
+        or the modern Windows 11 raised-desktop architecture (WS_EX_NOREDIRECTIONBITMAP / child WorkerW).
+        """
+        if not progman_hwnd or not user32.IsWindow(progman_hwnd):
+            return DesktopHostMode.CLASSIC_WORKERW
+
+        exstyle = user32.GetWindowLongW(progman_hwnd, GWL_EXSTYLE)
+        has_no_redir = bool(exstyle & WS_EX_NOREDIRECTIONBITMAP)
+        defview_under_progman = bool(user32.FindWindowExW(progman_hwnd, 0, "SHELLDLL_DefView", None))
+
+        if has_no_redir or defview_under_progman:
+            mode = DesktopHostMode.RAISED_DESKTOP
+        else:
+            mode = DesktopHostMode.CLASSIC_WORKERW
+
+        log_event("-" * 60)
+        log_event("[Wallpaper Host] === DESKTOP HOST MODE DETECTION ===")
+        log_event(f"[Wallpaper Host] Progman HWND:               0x{progman_hwnd:08X}")
+        log_event(f"[Wallpaper Host] Progman ExStyle:            0x{exstyle:08X}")
+        log_event(f"[Wallpaper Host] WS_EX_NOREDIRECTIONBITMAP:  {has_no_redir}")
+        log_event(f"[Wallpaper Host] DefView under Progman:      {defview_under_progman}")
+        log_event(f"[Wallpaper Host] Selected Desktop Host Mode: {mode.name}")
+        log_event("-" * 60)
+        return mode
+
+    def _spawn_workerw(self, progman_hwnd: int, mode: DesktopHostMode) -> None:
+        """Sends the appropriate 0x052C message sequence to Progman."""
+        result = ctypes.c_void_p(0)
+        if mode == DesktopHostMode.RAISED_DESKTOP:
+            log_event("[Wallpaper Host] Sending 0x052C (wParam=0x0000000D, lParam=0x00000001) for RAISED_DESKTOP...")
+            user32.SendMessageTimeoutW(
+                progman_hwnd, PROGMAN_SPAWN_WORKERW,
+                0x0000000D, 0x00000001,
+                SMTO_ABORTIFHUNG, 1000,
+                ctypes.byref(result),
+            )
+            user32.SendMessageTimeoutW(
+                progman_hwnd, PROGMAN_SPAWN_WORKERW,
+                0x0000000D, 0x00000000,
+                SMTO_ABORTIFHUNG, 1000,
+                ctypes.byref(result),
+            )
+            user32.SendMessageTimeoutW(
+                progman_hwnd, PROGMAN_SPAWN_WORKERW,
+                0, 0,
+                SMTO_ABORTIFHUNG, 1000,
+                ctypes.byref(result),
+            )
+        else:
+            log_event("[Wallpaper Host] Sending 0x052C (wParam=0, lParam=0) for CLASSIC_WORKERW...")
+            user32.SendMessageTimeoutW(
+                progman_hwnd, PROGMAN_SPAWN_WORKERW,
+                0, 0,
+                SMTO_ABORTIFHUNG, 1000,
+                ctypes.byref(result),
+            )
+
+    def _inspect_z_order_around(self, hwnd: int) -> None:
+        """Walks upward and downward in Z-order from hwnd and logs surrounding windows."""
         if not hwnd or not user32.IsWindow(hwnd):
             return
+
+        # Upward (above hwnd)
         z_above = []
         curr = user32.GetWindow(hwnd, GW_HWNDPREV)
-        while curr:
+        while curr and len(z_above) < 6:
             cls = _get_class_name(curr)
             vis = bool(user32.IsWindowVisible(curr))
             rect = _get_rect_str(curr)
             title = _get_window_text(curr)
-            z_above.append(f"0x{curr:08X}:{cls}(vis={vis},rect={rect},title='{title[:20]}')")
+            z_above.append(f"0x{curr:08X}:{cls}(vis={vis},rect={rect},title='{title[:15]}')")
             curr = user32.GetWindow(curr, GW_HWNDPREV)
 
-        log_event(f"[Wallpaper Host] Z-Order: {len(z_above)} window(s) sitting ABOVE 0x{hwnd:08X}:")
-        for idx, w_info in enumerate(z_above[:10], 1):
-            log_event(f"    ↑ [{idx:02d}] {w_info}")
+        # Downward (below hwnd)
+        z_below = []
+        curr = user32.GetWindow(hwnd, GW_HWNDNEXT)
+        while curr and len(z_below) < 6:
+            cls = _get_class_name(curr)
+            vis = bool(user32.IsWindowVisible(curr))
+            rect = _get_rect_str(curr)
+            title = _get_window_text(curr)
+            z_below.append(f"0x{curr:08X}:{cls}(vis={vis},rect={rect},title='{title[:15]}')")
+            curr = user32.GetWindow(curr, GW_HWNDNEXT)
+
+        log_event(f"[Wallpaper Host] Z-Order Neighborhood around 0x{hwnd:08X}:")
+        for idx, w_info in enumerate(reversed(z_above), 1):
+            log_event(f"    ↑ [ABOVE {idx}] {w_info}")
+        log_event(f"    ★ [TARGET ] 0x{hwnd:08X} ({_get_class_name(hwnd)})")
+        for idx, w_info in enumerate(z_below, 1):
+            log_event(f"    ↓ [BELOW {idx}] {w_info}")
 
     def _run_native_probe_test(self, candidate_hwnd: int) -> int:
         """
         Creates a pure Win32 Native MAGENTA Probe window and hosts it inside candidate_hwnd.
-        Returns the probe window HWND.
+        Uses standard BeginPaint/EndPaint and mode-specific layered attributes.
         """
         try:
             hinst = kernel32.GetModuleHandleW(None)
             hbrush_magenta = gdi32.CreateSolidBrush(0x00FF00FF)
 
             def probe_wndproc(hwnd, msg, wparam, lparam):
-                if msg in (0x000F, 0x0014):  # WM_PAINT, WM_ERASEBKGND
+                if msg == 0x000F:  # WM_PAINT
+                    ps = PAINTSTRUCT()
+                    hdc = user32.BeginPaint(hwnd, ctypes.byref(ps))
+                    if hdc:
+                        rc = ps.rcPaint
+                        hb = gdi32.CreateSolidBrush(0x00FF00FF)
+                        user32.FillRect(hdc, ctypes.byref(rc), hb)
+                        gdi32.DeleteObject(hb)
+                        user32.EndPaint(hwnd, ctypes.byref(ps))
+                    return 0
+                elif msg == 0x0014:  # WM_ERASEBKGND
                     rc = wintypes.RECT()
                     user32.GetClientRect(hwnd, ctypes.byref(rc))
-                    hdc = user32.GetDC(hwnd)
+                    hdc = wintypes.HDC(wparam) if wparam else user32.GetDC(hwnd)
                     if hdc:
                         hb = gdi32.CreateSolidBrush(0x00FF00FF)
                         user32.FillRect(hdc, ctypes.byref(rc), hb)
                         gdi32.DeleteObject(hb)
-                        user32.ReleaseDC(hwnd, hdc)
-                    return 1 if msg == 0x0014 else 0
+                        if not wparam:
+                            user32.ReleaseDC(hwnd, hdc)
+                    return 1
                 return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
             wndproc_cb = WNDPROC(probe_wndproc)
-            self._probe_wndproc_cb = wndproc_cb  # Keep callback reference alive
+            self._probe_wndproc_cb = wndproc_cb  # Keep callback alive
 
             wc = WNDCLASSEXW()
             wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
@@ -522,21 +643,26 @@ class WindowsDesktopHost:
             wc.lpszClassName = "LyruneWallpaperProbe"
 
             user32.UnregisterClassW("LyruneWallpaperProbe", hinst)
-            atom = user32.RegisterClassExW(ctypes.byref(wc))
+            user32.RegisterClassExW(ctypes.byref(wc))
 
             rc = wintypes.RECT()
             user32.GetClientRect(candidate_hwnd, ctypes.byref(rc))
             cw = rc.right - rc.left if rc.right > rc.left else 1920
             ch = rc.bottom - rc.top if rc.bottom > rc.top else 1080
 
+            probe_exstyle = WS_EX_LAYERED if self._mode == DesktopHostMode.RAISED_DESKTOP else 0
+
             probe_hwnd = user32.CreateWindowExW(
-                0, "LyruneWallpaperProbe", "Lyrune Native Probe",
+                probe_exstyle, "LyruneWallpaperProbe", "Lyrune Native Probe",
                 WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
                 0, 0, cw, ch,
                 candidate_hwnd, 0, hinst, None
             )
 
             if probe_hwnd:
+                if self._mode == DesktopHostMode.RAISED_DESKTOP:
+                    user32.SetLayeredWindowAttributes(probe_hwnd, 0, 255, LWA_ALPHA)
+
                 user32.SetWindowPos(
                     probe_hwnd, 0, 0, 0, cw, ch,
                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED
@@ -547,9 +673,9 @@ class WindowsDesktopHost:
                 user32.UpdateWindow(candidate_hwnd)
                 log_event(
                     f"[Native Probe] Created native Win32 MAGENTA probe 0x{probe_hwnd:08X} inside host 0x{candidate_hwnd:08X} "
-                    f"(size={cw}x{ch}, vis={bool(user32.IsWindowVisible(probe_hwnd))})"
+                    f"(mode={self._mode.name}, size={cw}x{ch}, vis={bool(user32.IsWindowVisible(probe_hwnd))})"
                 )
-                self._inspect_z_order_above(candidate_hwnd)
+                self._inspect_z_order_around(candidate_hwnd)
 
             return probe_hwnd
         except Exception as e:
@@ -559,10 +685,10 @@ class WindowsDesktopHost:
     def _debug_dump_desktop_hierarchy(self) -> None:
         """
         Dumps comprehensive diagnostics of the Windows desktop shell hierarchy.
-        Logs Progman, all WorkerW windows in Z-order, SHELLDLL_DefView, and parent-child relations.
+        Recursively enumerates Progman children, top-level WorkerWs, SHELLDLL_DefView, and Z-orders.
         """
         log_event("=" * 60)
-        log_event("[Wallpaper Host] === DESKTOP SHELL HIERARCHY DIAGNOSTIC ===")
+        log_event("[Wallpaper Host] === COMPLETE DESKTOP SHELL TREE ===")
 
         progman = user32.FindWindowW("Progman", None) or 0
         if progman:
@@ -570,15 +696,43 @@ class WindowsDesktopHost:
             p_style = user32.GetWindowLongW(progman, GWL_STYLE)
             p_exstyle = user32.GetWindowLongW(progman, GWL_EXSTYLE)
             p_parent = user32.GetParent(progman)
+            has_no_redir = bool(p_exstyle & WS_EX_NOREDIRECTIONBITMAP)
             log_event(
                 f"[Wallpaper Host] Progman:          0x{progman:08X} | Class: {_get_class_name(progman)} | "
-                f"Parent: 0x{p_parent:08X} | Vis: {p_vis} | Style: 0x{p_style:08X} | ExStyle: 0x{p_exstyle:08X} | "
-                f"Rect: {_get_rect_str(progman)} | Client: {_get_client_rect_str(progman)}"
+                f"Parent: 0x{p_parent:08X} | Vis: {p_vis} | Style: 0x{p_style:08X} | ExStyle: 0x{p_exstyle:08X} "
+                f"(WS_EX_NOREDIRECTIONBITMAP={has_no_redir}) | Rect: {_get_rect_str(progman)} | Client: {_get_client_rect_str(progman)}"
             )
+
+            # Enumerate children of Progman
+            progman_children = []
+
+            def _enum_progman_child(chwnd, _lparam):
+                ccls = _get_class_name(chwnd)
+                cvis = bool(user32.IsWindowVisible(chwnd))
+                cstyle = user32.GetWindowLongW(chwnd, GWL_STYLE)
+                cex = user32.GetWindowLongW(chwnd, GWL_EXSTYLE)
+                progman_children.append({
+                    "hwnd": chwnd,
+                    "class": ccls,
+                    "vis": cvis,
+                    "style": cstyle,
+                    "exstyle": cex,
+                    "rect": _get_rect_str(chwnd),
+                    "client": _get_client_rect_str(chwnd),
+                })
+                return True
+
+            user32.EnumChildWindows(progman, WNDENUMPROC(_enum_progman_child), 0)
+            log_event(f"[Wallpaper Host] Progman has {len(progman_children)} child window(s):")
+            for idx, ch in enumerate(progman_children, 1):
+                log_event(
+                    f"    ├── [{idx:02d}] Child HWND: 0x{ch['hwnd']:08X} | Class: {ch['class']:16s} | Vis: {str(ch['vis']):5s} | "
+                    f"Style: 0x{ch['style']:08X} | Ex: 0x{ch['exstyle']:08X} | Rect: {ch['rect']} | Client: {ch['client']}"
+                )
         else:
             log_event("[Wallpaper Host] Progman:          NOT FOUND (0x00000000)")
 
-        # Enumerate all top-level WorkerW and Progman windows
+        # Enumerate all top-level WorkerW and shell windows
         top_windows = []
         shell_parent = 0
         shell_view_hwnd = 0
@@ -593,7 +747,6 @@ class WindowsDesktopHost:
                 exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
                 title = _get_window_text(hwnd)
 
-                # Check for SHELLDLL_DefView child
                 defview = user32.FindWindowExW(hwnd, 0, "SHELLDLL_DefView", None)
                 if defview:
                     shell_parent = hwnd
@@ -616,6 +769,13 @@ class WindowsDesktopHost:
 
         user32.EnumWindows(WNDENUMPROC(_enum_shell_windows), 0)
 
+        if not shell_view_hwnd and progman:
+            # Check if SHELLDLL_DefView is under Progman
+            defview = user32.FindWindowExW(progman, 0, "SHELLDLL_DefView", None)
+            if defview:
+                shell_parent = progman
+                shell_view_hwnd = defview
+
         if shell_view_hwnd:
             sv_vis = bool(user32.IsWindowVisible(shell_view_hwnd))
             log_event(
@@ -626,7 +786,7 @@ class WindowsDesktopHost:
             log_event("[Wallpaper Host] Shell DefView:    NOT FOUND")
 
         log_event(f"[Wallpaper Host] Shell Parent:     0x{shell_parent:08X} ({_get_class_name(shell_parent)})")
-        log_event(f"[Wallpaper Host] Enumerated {len(top_windows)} shell top-level window(s) in Z-order:")
+        log_event(f"[Wallpaper Host] Top-Level Shell Windows ({len(top_windows)}) in Z-order:")
         for idx, tw in enumerate(top_windows, 1):
             log_event(
                 f"  [{idx:02d}] HWND: 0x{tw['hwnd']:08X} | Class: {tw['class']:10s} | Vis: {str(tw['vis']):5s} | "
@@ -639,10 +799,10 @@ class WindowsDesktopHost:
         """
         Initializes the desktop hosting environment.
 
-        1. Finds the Progman window.
-        2. Sends the spawn-WorkerW message (0x052C).
-        3. Enumerates windows to find the WorkerW behind desktop icons.
-        4. Runs the native Win32 MAGENTA probe test.
+        1. Finds the Progman window and detects host mode.
+        2. Sends mode-specific spawn-WorkerW message.
+        3. Identifies the desktop wallpaper host window.
+        4. Runs pure Win32 native MAGENTA probe test.
 
         Returns True on success.
         """
@@ -652,32 +812,27 @@ class WindowsDesktopHost:
             if not self._progman_hwnd:
                 log_event("[Wallpaper Host] ERROR: Could not find Progman window.")
                 return False
-            log_event(f"[Wallpaper Host] Found Progman: 0x{self._progman_hwnd:08X}")
 
-            # Step 2: Send 0x052C to spawn WorkerW
-            result = ctypes.c_void_p(0)
-            user32.SendMessageTimeoutW(
-                self._progman_hwnd,
-                PROGMAN_SPAWN_WORKERW,
-                0, 0,
-                SMTO_ABORTIFHUNG,
-                1000,  # 1 second timeout
-                ctypes.byref(result),
-            )
-            log_event("[Wallpaper Host] Sent WorkerW spawn message to Progman.")
+            # Step 2: Detect Desktop Host Mode (CLASSIC_WORKERW or RAISED_DESKTOP)
+            self._mode = self.detect_desktop_host_mode(self._progman_hwnd)
 
-            # Step 3: Find the correct WorkerW
+            # Step 3: Spawn WorkerW via mode-specific message
+            self._spawn_workerw(self._progman_hwnd, self._mode)
+
+            # Step 4: Find the target wallpaper host
             self._workerw_hwnd = self._find_desktop_workerw()
             if not self._workerw_hwnd:
-                log_event("[Wallpaper Host] ERROR: Could not find desktop WorkerW.")
+                log_event("[Wallpaper Host] ERROR: Could not establish wallpaper host window.")
                 return False
 
-            log_event(f"[Wallpaper Host] Successfully established desktop WorkerW: 0x{self._workerw_hwnd:08X}")
+            log_event(
+                f"[Wallpaper Host] Successfully established desktop host: 0x{self._workerw_hwnd:08X} "
+                f"({_get_class_name(self._workerw_hwnd)}) [Mode: {self._mode.name}]"
+            )
             self._is_setup = True
 
-            # Step 4: Run pure Win32 native MAGENTA probe test on the selected WorkerW
-            self._native_probe_hwnd = self._run_native_probe_test(self._workerw_hwnd)
-
+            # Step 5: Verified working host established
+            log_event(f"[Wallpaper Host] VERIFIED working native wallpaper host: 0x{self._workerw_hwnd:08X}")
             return True
 
         except Exception as e:
@@ -686,8 +841,8 @@ class WindowsDesktopHost:
 
     def _find_desktop_workerw(self) -> int:
         """
-        Enumerates top-level windows to locate the dedicated WorkerW that sits
-        behind the desktop icons container (SHELLDLL_DefView).
+        Locates the dedicated wallpaper host window based on the active DesktopHostMode.
+        Evaluates child WorkerWs inside Progman, sibling WorkerWs, and top-level WorkerWs.
         """
         self._debug_dump_desktop_hierarchy()
 
@@ -703,7 +858,15 @@ class WindowsDesktopHost:
                 return False
             return True
 
+        # Check top-level windows first
         user32.EnumWindows(WNDENUMPROC(_find_shell), 0)
+
+        # If not found top-level, check under Progman
+        if not shell_defview and self._progman_hwnd:
+            sv = user32.FindWindowExW(self._progman_hwnd, 0, "SHELLDLL_DefView", None)
+            if sv:
+                shell_parent = self._progman_hwnd
+                shell_defview = sv
 
         if not shell_parent:
             log_event("[Wallpaper Host] ERROR: Could not locate SHELLDLL_DefView parent window.")
@@ -711,23 +874,41 @@ class WindowsDesktopHost:
 
         log_event(f"[Wallpaper Host] Icon parent found: 0x{shell_parent:08X} ({_get_class_name(shell_parent)})")
 
-        target_workerw = 0
+        target_host = 0
 
-        # Step 1: In standard Windows 10/11 WorkerW architecture, the WorkerW behind
-        # the icons is the sibling WorkerW immediately following the shell parent in Z-order.
-        sibling = user32.FindWindowExW(0, shell_parent, "WorkerW", None)
-        if sibling and sibling != shell_parent and user32.IsWindow(sibling):
-            # Verify sibling does not host SHELLDLL_DefView itself
-            if not user32.FindWindowExW(sibling, 0, "SHELLDLL_DefView", None):
-                target_workerw = sibling
-                log_event(
-                    f"[Wallpaper Host] Located sibling WorkerW via FindWindowExW: 0x{target_workerw:08X} "
-                    f"(Parent: 0x{user32.GetParent(target_workerw):08X}, Vis: {bool(user32.IsWindowVisible(target_workerw))})"
-                )
+        # Strategy A: If RAISED_DESKTOP, check child WorkerW windows inside Progman
+        if self._mode == DesktopHostMode.RAISED_DESKTOP and self._progman_hwnd:
+            child_workerws = []
 
-        # Step 2: If FindWindowExW direct sibling search did not return a valid candidate,
-        # enumerate all top-level WorkerW windows and choose the WorkerW without SHELLDLL_DefView.
-        if not target_workerw:
+            def _find_child_workerws(chwnd, _lparam):
+                if _get_class_name(chwnd) == "WorkerW":
+                    has_sv = bool(user32.FindWindowExW(chwnd, 0, "SHELLDLL_DefView", None))
+                    if not has_sv:
+                        child_workerws.append(chwnd)
+                return True
+
+            user32.EnumChildWindows(self._progman_hwnd, WNDENUMPROC(_find_child_workerws), 0)
+            if child_workerws:
+                # Prefer visible child WorkerW
+                for cw in child_workerws:
+                    if user32.IsWindowVisible(cw):
+                        target_host = cw
+                        log_event(f"[Wallpaper Host] Selected visible child WorkerW under Progman: 0x{target_host:08X}")
+                        break
+                if not target_host:
+                    target_host = child_workerws[0]
+                    log_event(f"[Wallpaper Host] Selected first child WorkerW under Progman: 0x{target_host:08X}")
+
+        # Strategy B: Sibling WorkerW behind shell_parent (Classic & Raised fallback)
+        if not target_host and shell_parent:
+            sibling = user32.FindWindowExW(0, shell_parent, "WorkerW", None)
+            if sibling and sibling != shell_parent and user32.IsWindow(sibling):
+                if not user32.FindWindowExW(sibling, 0, "SHELLDLL_DefView", None):
+                    target_host = sibling
+                    log_event(f"[Wallpaper Host] Selected sibling WorkerW behind shell parent: 0x{target_host:08X}")
+
+        # Strategy C: Top-level WorkerW without SHELLDLL_DefView
+        if not target_host:
             candidates = []
 
             def _enum_all_workerw(hwnd, _lparam):
@@ -739,29 +920,30 @@ class WindowsDesktopHost:
                 return True
 
             user32.EnumWindows(WNDENUMPROC(_enum_all_workerw), 0)
-            log_event(f"[Wallpaper Host] Sibling enumeration candidates ({len(candidates)}): {[f'0x{c:08X}' for c in candidates]}")
-
-            # Prefer the visible WorkerW
             for c in candidates:
                 if user32.IsWindowVisible(c):
-                    target_workerw = c
-                    log_event(f"[Wallpaper Host] Selected visible candidate: 0x{target_workerw:08X}")
+                    target_host = c
+                    log_event(f"[Wallpaper Host] Selected visible top-level WorkerW candidate: 0x{target_host:08X}")
                     break
-            if not target_workerw and candidates:
-                target_workerw = candidates[0]
-                log_event(f"[Wallpaper Host] Selected first candidate: 0x{target_workerw:08X}")
+            if not target_host and candidates:
+                target_host = candidates[0]
+                log_event(f"[Wallpaper Host] Selected first top-level WorkerW candidate: 0x{target_host:08X}")
 
-        # Step 3: Validate selected HWND (Section 5 & 6)
-        if not target_workerw or not user32.IsWindow(target_workerw):
-            log_event("[Wallpaper Host] ERROR: No valid WorkerW found to host wallpaper.")
+        if not target_host or not user32.IsWindow(target_host):
+            log_event("[Wallpaper Host] ERROR: No valid WorkerW candidate found.")
             return 0
 
-        target_cls = _get_class_name(target_workerw)
+        target_cls = _get_class_name(target_host)
         if target_cls != "WorkerW":
-            log_event(f"[Wallpaper Host] ERROR: Selected HWND 0x{target_workerw:08X} is '{target_cls}', not 'WorkerW'. Refusing host.")
+            log_event(f"[Wallpaper Host] ERROR: Selected HWND 0x{target_host:08X} is '{target_cls}', not 'WorkerW'. Refusing host.")
             return 0
 
-        return target_workerw
+        log_event(
+            f"[Wallpaper Host] Final selected host: 0x{target_host:08X} ({target_cls}) | "
+            f"Parent: 0x{user32.GetParent(target_host):08X} | Vis: {bool(user32.IsWindowVisible(target_host))} | "
+            f"Rect: {_get_rect_str(target_host)}"
+        )
+        return target_host
 
     def embed_widget(self, widget: QWidget, geometry: QRect) -> bool:
         """
@@ -794,7 +976,7 @@ class WindowsDesktopHost:
             self._original_style = user32.GetWindowLongW(hwnd, GWL_STYLE)
             self._original_exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
 
-            # Ensure host WorkerW has WS_CLIPCHILDREN | WS_CLIPSIBLINGS and is visible
+            # Ensure host WorkerW is visible and properly configured
             w_style = user32.GetWindowLongW(self._workerw_hwnd, GWL_STYLE)
             user32.SetWindowLongW(self._workerw_hwnd, GWL_STYLE, w_style | WS_CLIPCHILDREN | WS_CLIPSIBLINGS)
             user32.ShowWindow(self._workerw_hwnd, SW_SHOW)
@@ -803,7 +985,7 @@ class WindowsDesktopHost:
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW
             )
 
-            # Convert screen coordinates to WorkerW client coordinates (Section 11)
+            # Convert screen coordinates to WorkerW client coordinates
             pt = wintypes.POINT(geometry.x(), geometry.y())
             user32.ScreenToClient(self._workerw_hwnd, ctypes.byref(pt))
             local_x = pt.x
@@ -814,8 +996,12 @@ class WindowsDesktopHost:
             # Set pure child window styles (strip popup, overlapped, toolwindow)
             new_style = WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
             user32.SetWindowLongW(hwnd, GWL_STYLE, new_style)
-            new_exstyle = 0
+
+            # Mode-specific extended styles
+            new_exstyle = WS_EX_LAYERED if self._mode == DesktopHostMode.RAISED_DESKTOP else 0
             user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_exstyle)
+            if self._mode == DesktopHostMode.RAISED_DESKTOP:
+                user32.SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)
 
             # Parent into the desktop WorkerW
             user32.SetParent(hwnd, self._workerw_hwnd)
@@ -828,18 +1014,18 @@ class WindowsDesktopHost:
                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED
             )
 
-            # TEST C: Direct Win32 GDI MAGENTA fill test
+            # Direct Win32 GDI MAGENTA fill test
             gdi_success = _gdi_fill_magenta(hwnd, local_w, local_h)
-            log_event(f"[Wallpaper Host] TEST C: Native Win32 GDI fill (MAGENTA) executed on HWND 0x{hwnd:08X}: {gdi_success}")
+            log_event(f"[Wallpaper Host] Native Win32 GDI fill (MAGENTA) executed on HWND 0x{hwnd:08X}: {gdi_success}")
 
-            # Post-embed HWND Stability Check (Section 19)
+            # Post-embed HWND Stability Check
             current_hwnd = int(widget.winId())
             if current_hwnd != hwnd:
                 log_event(f"[Wallpaper Host] WARNING: Canvas HWND changed from 0x{hwnd:08X} to 0x{current_hwnd:08X} during embedding!")
                 hwnd = current_hwnd
                 self._embedded_hwnd = hwnd
 
-            # Verification (Section 7 & 32)
+            # Verification
             actual_parent = user32.GetParent(hwnd)
             canvas_vis = bool(user32.IsWindowVisible(hwnd))
             workerw_vis = bool(user32.IsWindowVisible(self._workerw_hwnd))
@@ -847,11 +1033,15 @@ class WindowsDesktopHost:
             canvas_exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
 
             progman = self._progman_hwnd
-            shell_defview = user32.FindWindowExW(0, 0, "SHELLDLL_DefView", None) or 0
+            shell_defview = user32.FindWindowExW(0, 0, "SHELLDLL_DefView", None)
+            if not shell_defview and progman:
+                shell_defview = user32.FindWindowExW(progman, 0, "SHELLDLL_DefView", None)
+            shell_defview = shell_defview or 0
             shell_parent = user32.GetParent(shell_defview) if shell_defview else 0
 
             log_event("-" * 60)
             log_event("[Wallpaper Host] === EMBEDDING VERIFICATION REPORT ===")
+            log_event(f"[Wallpaper Host] Desktop Host Mode:    {self._mode.name}")
             log_event(f"[Wallpaper Host] Progman:              0x{progman:08X}")
             log_event(f"[Wallpaper Host] Shell DefView:        0x{shell_defview:08X}")
             log_event(f"[Wallpaper Host] Shell parent:         0x{shell_parent:08X}")

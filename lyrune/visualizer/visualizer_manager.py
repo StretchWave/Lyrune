@@ -125,11 +125,11 @@ class VisualizerManager(QObject):
         return diag
 
     def _on_window_position_changed(self, pos_data: Dict[str, Any]) -> None:
-        """Saves window position and orientation to settings."""
+        """Saves window position and orientation to settings immediately."""
         if self.settings_mgr.get("visualizer_overlay_mode") == "Normal":
             for k, v in pos_data.items():
                 self.settings_mgr.settings[k] = v
-            self.settings_mgr.save()
+            self.settings_mgr.save_immediate()
 
     def set_style(self, style_name: str) -> None:
         """Swaps active visualizer style (extensible for future visualizers)."""

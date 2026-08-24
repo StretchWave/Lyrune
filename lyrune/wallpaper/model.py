@@ -41,11 +41,17 @@ class WallpaperConfig:
     vinyl_y: float = 0.65                    # Vertical center [0.0, 1.0]
     vinyl_size: float = 0.20                 # Diameter as fraction of monitor width
     vinyl_opacity: int = 100                 # 0–100 %
+    vinyl_label_ratio: float = 38.0          # Album cover size as % of record radius (10–80 %)
     rotation_speed: float = 12.0             # Seconds per full revolution
 
-    # Metadata display
+    # Metadata display & typography
     show_title: bool = True
     show_artist: bool = True
+    text_position: str = "Below"             # "Below" | "Above" | "Left" | "Right" | "Hidden"
+    text_alignment: str = "Center"           # "Center" | "Left" | "Right"
+    text_color: str = "#FFFFFF"              # Hex font color
+    title_font_size: int = 14                # Song title font size (pt)
+    artist_font_size: int = 11               # Artist font size (pt)
 
     # Rotation behavior
     rotate_while_playing: bool = True
@@ -68,9 +74,15 @@ class WallpaperConfig:
             vinyl_y=settings.get("wallpaper_vinyl_y", 0.65),
             vinyl_size=settings.get("wallpaper_vinyl_size", 0.20),
             vinyl_opacity=settings.get("wallpaper_vinyl_opacity", 100),
+            vinyl_label_ratio=settings.get("wallpaper_vinyl_label_ratio", 38.0),
             rotation_speed=settings.get("wallpaper_rotation_speed", 12.0),
             show_title=settings.get("wallpaper_show_title", True),
             show_artist=settings.get("wallpaper_show_artist", True),
+            text_position=settings.get("wallpaper_text_position", "Below"),
+            text_alignment=settings.get("wallpaper_text_alignment", "Center"),
+            text_color=settings.get("wallpaper_text_color", "#FFFFFF"),
+            title_font_size=settings.get("wallpaper_title_font_size", 14),
+            artist_font_size=settings.get("wallpaper_artist_font_size", 11),
             rotate_while_playing=settings.get("wallpaper_rotate_while_playing", True),
             pause_on_music_pause=settings.get("wallpaper_pause_on_music_pause", True),
             pause_on_battery=settings.get("wallpaper_pause_on_battery", False),
@@ -89,9 +101,15 @@ class WallpaperConfig:
             "wallpaper_vinyl_y": self.vinyl_y,
             "wallpaper_vinyl_size": self.vinyl_size,
             "wallpaper_vinyl_opacity": self.vinyl_opacity,
+            "wallpaper_vinyl_label_ratio": self.vinyl_label_ratio,
             "wallpaper_rotation_speed": self.rotation_speed,
             "wallpaper_show_title": self.show_title,
             "wallpaper_show_artist": self.show_artist,
+            "wallpaper_text_position": self.text_position,
+            "wallpaper_text_alignment": self.text_alignment,
+            "wallpaper_text_color": self.text_color,
+            "wallpaper_title_font_size": self.title_font_size,
+            "wallpaper_artist_font_size": self.artist_font_size,
             "wallpaper_rotate_while_playing": self.rotate_while_playing,
             "wallpaper_pause_on_music_pause": self.pause_on_music_pause,
             "wallpaper_pause_on_battery": self.pause_on_battery,

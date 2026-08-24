@@ -758,12 +758,16 @@ class SettingsDialog(QDialog):
         layout.addWidget(bg_group)
 
         # 3. Animated Vinyl Record & Metadata
-        vinyl_group = QGroupBox("Animated Vinyl Record && Metadata", self.wallpaper_page)
+        vinyl_group = QGroupBox("Animated Vinyl Record && Typography", self.wallpaper_page)
         vinyl_form = QFormLayout(vinyl_group)
 
         self.wallpaper_vinyl_size_slider = ValueSlider(5, 60, 20, "%", self)
         self.wallpaper_vinyl_size_slider.valueChanged.connect(self._on_wallpaper_vinyl_size_slider_changed)
-        vinyl_form.addRow("Vinyl Diameter:", self.wallpaper_vinyl_size_slider)
+        vinyl_form.addRow("Vinyl Disc Diameter:", self.wallpaper_vinyl_size_slider)
+
+        self.wallpaper_vinyl_label_ratio_slider = ValueSlider(10, 80, 38, "%", self)
+        self.wallpaper_vinyl_label_ratio_slider.valueChanged.connect(self._on_wallpaper_vinyl_label_ratio_slider_changed)
+        vinyl_form.addRow("Album Cover Size (% of Vinyl):", self.wallpaper_vinyl_label_ratio_slider)
 
         self.wallpaper_vinyl_opacity_slider = ValueSlider(0, 100, 100, "%", self)
         self.wallpaper_vinyl_opacity_slider.valueChanged.connect(self._on_wallpaper_vinyl_opacity_changed)
@@ -781,11 +785,33 @@ class SettingsDialog(QDialog):
         self.wallpaper_pause_on_music_switch.toggled.connect(self._on_wallpaper_toggle_changed)
         vinyl_form.addRow("", self.wallpaper_pause_on_music_switch)
 
-        self.wallpaper_show_title_switch = ToggleSwitch("Show Song Title Below Vinyl", self)
+        self.wallpaper_text_position_combo = QComboBox(self)
+        self.wallpaper_text_position_combo.addItems(["Below Vinyl", "Above Vinyl", "Left of Vinyl", "Right of Vinyl", "Hidden"])
+        self.wallpaper_text_position_combo.currentTextChanged.connect(self._on_wallpaper_toggle_changed)
+        vinyl_form.addRow("Text Position:", self.wallpaper_text_position_combo)
+
+        self.wallpaper_text_alignment_combo = QComboBox(self)
+        self.wallpaper_text_alignment_combo.addItems(["Center", "Left", "Right"])
+        self.wallpaper_text_alignment_combo.currentTextChanged.connect(self._on_wallpaper_toggle_changed)
+        vinyl_form.addRow("Text Alignment:", self.wallpaper_text_alignment_combo)
+
+        self.btn_wallpaper_text_color = ColorSwatchButton("#FFFFFF", self)
+        self.btn_wallpaper_text_color.colorChanged.connect(self._on_wallpaper_toggle_changed)
+        vinyl_form.addRow("Text Font Color:", self.btn_wallpaper_text_color)
+
+        self.wallpaper_title_font_size_slider = ValueSlider(8, 48, 14, " pt", self)
+        self.wallpaper_title_font_size_slider.valueChanged.connect(self._on_wallpaper_toggle_changed)
+        vinyl_form.addRow("Title Font Size:", self.wallpaper_title_font_size_slider)
+
+        self.wallpaper_artist_font_size_slider = ValueSlider(6, 36, 11, " pt", self)
+        self.wallpaper_artist_font_size_slider.valueChanged.connect(self._on_wallpaper_toggle_changed)
+        vinyl_form.addRow("Artist Font Size:", self.wallpaper_artist_font_size_slider)
+
+        self.wallpaper_show_title_switch = ToggleSwitch("Show Song Title", self)
         self.wallpaper_show_title_switch.toggled.connect(self._on_wallpaper_toggle_changed)
         vinyl_form.addRow("", self.wallpaper_show_title_switch)
 
-        self.wallpaper_show_artist_switch = ToggleSwitch("Show Artist Name Below Vinyl", self)
+        self.wallpaper_show_artist_switch = ToggleSwitch("Show Artist Name", self)
         self.wallpaper_show_artist_switch.toggled.connect(self._on_wallpaper_toggle_changed)
         vinyl_form.addRow("", self.wallpaper_show_artist_switch)
 
@@ -849,6 +875,11 @@ class SettingsDialog(QDialog):
         self.wallpaper_preview.update_vinyl_size(normalized)
         self._on_control_changed()
 
+    def _on_wallpaper_vinyl_label_ratio_slider_changed(self, value: int):
+        self.wallpaper_preview._config.vinyl_label_ratio = float(value)
+        self.wallpaper_preview.update()
+        self._on_control_changed()
+
     def _on_wallpaper_vinyl_opacity_changed(self, value: int):
         self.wallpaper_preview._config.vinyl_opacity = value
         self.wallpaper_preview.update()
@@ -858,13 +889,14 @@ class SettingsDialog(QDialog):
         self.wallpaper_preview._config.rotation_speed = float(value)
         self._on_control_changed()
 
-    def _on_wallpaper_toggle_changed(self, checked: bool):
+    def _on_wallpaper_toggle_changed(self, *args):
         self._sync_wallpaper_preview_config()
         self._on_control_changed()
 
     def _sync_wallpaper_preview_config(self):
         if not hasattr(self, 'wallpaper_preview'):
             return
+        pos_raw = self.wallpaper_text_position_combo.currentText().split()[0]
         cfg = WallpaperConfig(
             enabled=self.wallpaper_enable_switch.isChecked(),
             wallpaper_type="video" if self.wallpaper_type_combo.currentText() == "Live Video" else "static",
@@ -875,9 +907,15 @@ class SettingsDialog(QDialog):
             vinyl_y=self.working_settings.get("wallpaper_vinyl_y", 0.65),
             vinyl_size=self.wallpaper_vinyl_size_slider.value() / 100.0,
             vinyl_opacity=self.wallpaper_vinyl_opacity_slider.value(),
+            vinyl_label_ratio=float(self.wallpaper_vinyl_label_ratio_slider.value()),
             rotation_speed=float(self.wallpaper_rotation_speed_slider.value()),
             show_title=self.wallpaper_show_title_switch.isChecked(),
             show_artist=self.wallpaper_show_artist_switch.isChecked(),
+            text_position=pos_raw,
+            text_alignment=self.wallpaper_text_alignment_combo.currentText(),
+            text_color=self.btn_wallpaper_text_color.color(),
+            title_font_size=self.wallpaper_title_font_size_slider.value(),
+            artist_font_size=self.wallpaper_artist_font_size_slider.value(),
             rotate_while_playing=self.wallpaper_rotate_playing_switch.isChecked(),
             pause_on_music_pause=self.wallpaper_pause_on_music_switch.isChecked(),
         )
@@ -1742,8 +1780,18 @@ class SettingsDialog(QDialog):
         self.wallpaper_display_combo.setCurrentText(s.get("wallpaper_display_mode", "Primary Display"))
 
         self.wallpaper_vinyl_size_slider.setValue(int(s.get("wallpaper_vinyl_size", 0.20) * 100))
+        self.wallpaper_vinyl_label_ratio_slider.setValue(int(s.get("wallpaper_vinyl_label_ratio", 38.0)))
         self.wallpaper_vinyl_opacity_slider.setValue(s.get("wallpaper_vinyl_opacity", 100))
         self.wallpaper_rotation_speed_slider.setValue(int(s.get("wallpaper_rotation_speed", 12.0)))
+
+        text_pos = s.get("wallpaper_text_position", "Below").capitalize()
+        pos_map = {"Below": "Below Vinyl", "Above": "Above Vinyl", "Left": "Left of Vinyl", "Right": "Right of Vinyl", "Hidden": "Hidden"}
+        self.wallpaper_text_position_combo.setCurrentText(pos_map.get(text_pos, "Below Vinyl"))
+
+        self.wallpaper_text_alignment_combo.setCurrentText(s.get("wallpaper_text_alignment", "Center"))
+        self.btn_wallpaper_text_color.setColor(s.get("wallpaper_text_color", "#FFFFFF"))
+        self.wallpaper_title_font_size_slider.setValue(s.get("wallpaper_title_font_size", 14))
+        self.wallpaper_artist_font_size_slider.setValue(s.get("wallpaper_artist_font_size", 11))
 
         self.wallpaper_rotate_playing_switch.setChecked_silent(s.get("wallpaper_rotate_while_playing", True))
         self.wallpaper_pause_on_music_switch.setChecked_silent(s.get("wallpaper_pause_on_music_pause", True))
@@ -1790,6 +1838,27 @@ class SettingsDialog(QDialog):
         selected_source_id = self.source_combo.currentData()
         layer_mode = self.layer_combo.currentData() or "Top"
         vis_layer_mode = self.vis_layer_combo.currentData() or "Top"
+
+        # Query live coordinates from parent widgets if available, fallback to settings
+        parent_widget = self.parent()
+        live_win_x = self.working_settings.get("window_x", -1)
+        live_win_y = self.working_settings.get("window_y", -1)
+        if parent_widget and hasattr(parent_widget, 'pos'):
+            p = parent_widget.pos()
+            live_win_x, live_win_y = p.x(), p.y()
+        elif self.settings_manager:
+            live_win_x = self.settings_manager.get("window_x", live_win_x)
+            live_win_y = self.settings_manager.get("window_y", live_win_y)
+
+        live_vis_x = self.working_settings.get("visualizer_x", -1)
+        live_vis_y = self.working_settings.get("visualizer_y", -1)
+        if parent_widget and hasattr(parent_widget, 'visualizer_manager') and parent_widget.visualizer_manager.window:
+            vp = parent_widget.visualizer_manager.window.pos()
+            live_vis_x, live_vis_y = vp.x(), vp.y()
+        elif self.settings_manager:
+            live_vis_x = self.settings_manager.get("visualizer_x", live_vis_x)
+            live_vis_y = self.settings_manager.get("visualizer_y", live_vis_y)
+
         return {
             "font_family": self.font_combo.currentFont().family(),
             "font_size": self.font_size_slider.value(),
@@ -1810,8 +1879,8 @@ class SettingsDialog(QDialog):
             "shadow_blur": self.shadow_blur_slider.value(),
             "window_width": self.win_width_slider.value(),
             "window_height": self.win_height_slider.value(),
-            "window_x": self.working_settings.get("window_x", -1),
-            "window_y": self.working_settings.get("window_y", -1),
+            "window_x": live_win_x,
+            "window_y": live_win_y,
             "window_layer_mode": layer_mode,
             "always_on_top": (layer_mode == "Top"),
             "lock_position": self.lock_switch.isChecked(),
@@ -1842,6 +1911,8 @@ class SettingsDialog(QDialog):
             "visualizer_snap_edge": self.vis_orientation_combo.currentText().upper() if self.vis_orientation_combo.currentText() != "Free" else "NONE",
             "visualizer_width": self.vis_width_slider.value(),
             "visualizer_height": self.vis_height_slider.value(),
+            "visualizer_x": live_vis_x,
+            "visualizer_y": live_vis_y,
             "visualizer_opacity": self.vis_opacity_slider.value(),
             "visualizer_color": self.btn_vis_color.color(),
             "visualizer_color_mode": self.vis_color_mode_combo.currentText(),
@@ -1875,7 +1946,13 @@ class SettingsDialog(QDialog):
             "wallpaper_vinyl_y": self.working_settings.get("wallpaper_vinyl_y", 0.65),
             "wallpaper_vinyl_size": self.wallpaper_vinyl_size_slider.value() / 100.0,
             "wallpaper_vinyl_opacity": self.wallpaper_vinyl_opacity_slider.value(),
+            "wallpaper_vinyl_label_ratio": float(self.wallpaper_vinyl_label_ratio_slider.value()),
             "wallpaper_rotation_speed": float(self.wallpaper_rotation_speed_slider.value()),
+            "wallpaper_text_position": self.wallpaper_text_position_combo.currentText().split()[0],
+            "wallpaper_text_alignment": self.wallpaper_text_alignment_combo.currentText(),
+            "wallpaper_text_color": self.btn_wallpaper_text_color.color(),
+            "wallpaper_title_font_size": self.wallpaper_title_font_size_slider.value(),
+            "wallpaper_artist_font_size": self.wallpaper_artist_font_size_slider.value(),
             "wallpaper_show_title": self.wallpaper_show_title_switch.isChecked(),
             "wallpaper_show_artist": self.wallpaper_show_artist_switch.isChecked(),
             "wallpaper_rotate_while_playing": self.wallpaper_rotate_playing_switch.isChecked(),
