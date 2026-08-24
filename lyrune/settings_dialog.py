@@ -1079,9 +1079,12 @@ class SettingsDialog(QDialog):
         self.vis_click_through_switch.toggled.connect(self._on_control_changed)
         vis_beh_form.addRow("", self.vis_click_through_switch)
 
-        self.vis_top_switch = ToggleSwitch("Keep Visualizer Always on Top", self)
-        self.vis_top_switch.toggled.connect(self._on_control_changed)
-        vis_beh_form.addRow("", self.vis_top_switch)
+        self.vis_layer_combo = QComboBox(self)
+        self.vis_layer_combo.addItem("✨ Hover Over All Windows (Always on Top)", "Top")
+        self.vis_layer_combo.addItem("🪟 Normal Window (Standard Layer)", "Normal")
+        self.vis_layer_combo.addItem("🖼️ Background / Desktop (Behind All Windows)", "Bottom")
+        self.vis_layer_combo.currentIndexChanged.connect(self._on_control_changed)
+        vis_beh_form.addRow("Visualizer Layer / Stacking:", self.vis_layer_combo)
 
         self.vis_exclude_capture_switch = ToggleSwitch("Exclude Visualizer from OBS / Discord Screen Capture", self)
         self.vis_exclude_capture_switch.toggled.connect(self._on_control_changed)
@@ -1126,6 +1129,33 @@ class SettingsDialog(QDialog):
             parent_widget.visualizer_manager.set_preset_position(preset)
             self._on_control_changed()
 
+    def _on_lyrics_pos_preset(self, preset: str):
+        screen_geo = QApplication.primaryScreen().availableGeometry()
+        w = self.win_width_slider.value()
+        h = self.win_height_slider.value()
+        if preset == "Bottom":
+            x = screen_geo.left() + (screen_geo.width() - w) // 2
+            y = screen_geo.top() + screen_geo.height() - h - 60
+        elif preset == "Top":
+            x = screen_geo.left() + (screen_geo.width() - w) // 2
+            y = screen_geo.top() + 40
+        elif preset == "Center":
+            x = screen_geo.left() + (screen_geo.width() - w) // 2
+            y = screen_geo.top() + (screen_geo.height() - h) // 2
+        else:  # Reset
+            w = 800
+            h = 220
+            self.win_width_slider.setValue(800)
+            self.win_height_slider.setValue(220)
+            x = screen_geo.left() + (screen_geo.width() - 800) // 2
+            y = screen_geo.top() + screen_geo.height() - 220 - 100
+
+        self.working_settings["window_x"] = x
+        self.working_settings["window_y"] = y
+        self.working_settings["window_width"] = w
+        self.working_settings["window_height"] = h
+        self._on_control_changed()
+
     def _on_vis_orientation_changed(self, text: str):
         self._on_control_changed()
 
@@ -1168,7 +1198,9 @@ class SettingsDialog(QDialog):
     def _on_apply_game_overlay_preset(self):
         self.vis_overlay_mode_combo.setCurrentText("Game Overlay")
         self.vis_opacity_slider.setValue(85)
-        self.vis_top_switch.setChecked(True)
+        idx = self.vis_layer_combo.findData("Top")
+        if idx >= 0:
+            self.vis_layer_combo.setCurrentIndex(idx)
         self.vis_click_through_switch.setChecked(True)
         self.vis_overlay_margin_slider.setValue(15)
         self.vis_overlay_pos_combo.setCurrentText("Bottom")
@@ -1228,9 +1260,12 @@ class SettingsDialog(QDialog):
         behavior_group = QGroupBox("Overlay Behavior", self.behavior_page)
         form = QFormLayout(behavior_group)
 
-        self.top_switch = ToggleSwitch("Keep Window Always on Top", self)
-        self.top_switch.toggled.connect(self._on_control_changed)
-        form.addRow("", self.top_switch)
+        self.layer_combo = QComboBox(self)
+        self.layer_combo.addItem("✨ Hover Over All Windows (Always on Top)", "Top")
+        self.layer_combo.addItem("🪟 Normal Window (Standard Layer)", "Normal")
+        self.layer_combo.addItem("🖼️ Background / Desktop (Behind All Windows)", "Bottom")
+        self.layer_combo.currentIndexChanged.connect(self._on_control_changed)
+        form.addRow("Window Layer / Stacking:", self.layer_combo)
 
         self.lock_switch = ToggleSwitch("Lock Position (Prevent Mouse Dragging)", self)
         self.lock_switch.toggled.connect(self._on_control_changed)
@@ -1265,6 +1300,30 @@ class SettingsDialog(QDialog):
         form.addRow("Global Sync Offset Nudge:", self.sync_offset_slider)
 
         layout.addWidget(behavior_group)
+
+        # Overlay Dimensions & Position Presets
+        geo_group = QGroupBox("Dimensions && Default Position", self.behavior_page)
+        geo_layout = QVBoxLayout(geo_group)
+        geo_form = QFormLayout()
+
+        self.win_width_slider = ValueSlider(300, 1600, 800, " px", self)
+        self.win_width_slider.valueChanged.connect(self._on_control_changed)
+        geo_form.addRow("Overlay Width:", self.win_width_slider)
+
+        self.win_height_slider = ValueSlider(70, 600, 220, " px", self)
+        self.win_height_slider.valueChanged.connect(self._on_control_changed)
+        geo_form.addRow("Overlay Height:", self.win_height_slider)
+        geo_layout.addLayout(geo_form)
+
+        pos_btn_layout = QHBoxLayout()
+        for preset, label in [("Bottom", "Center Bottom"), ("Top", "Center Top"), ("Center", "Center Screen"), ("Reset", "Reset Default")]:
+            btn = QPushButton(label, self)
+            btn.setObjectName("btn_secondary" if preset == "Bottom" else "btn_ghost")
+            btn.clicked.connect(lambda _, p=preset: self._on_lyrics_pos_preset(p))
+            pos_btn_layout.addWidget(btn)
+        geo_layout.addLayout(pos_btn_layout)
+
+        layout.addWidget(geo_group)
 
     # --- Page 3: Animations ---
     def _init_animations_page(self):
@@ -1597,7 +1656,11 @@ class SettingsDialog(QDialog):
         self.adaptive_color_switch.setChecked_silent(s.get("adaptive_color", False))
         self.shadow_switch.setChecked_silent(s.get("shadow_enabled", True))
 
-        self.top_switch.setChecked_silent(s.get("always_on_top", True))
+        layer_mode = s.get("window_layer_mode", "Top" if s.get("always_on_top", True) else "Normal")
+        idx = self.layer_combo.findData(layer_mode)
+        if idx >= 0:
+            self.layer_combo.setCurrentIndex(idx)
+
         self.lock_switch.setChecked_silent(s.get("lock_position", False))
         self.click_through_switch.setChecked_silent(s.get("click_through", False))
         self.exclude_capture_switch.setChecked_silent(s.get("exclude_from_capture", False))
@@ -1609,8 +1672,12 @@ class SettingsDialog(QDialog):
         self.sync_offset_slider.setValue(s.get("sync_offset_ms", 0))
         self.anim_speed_slider.setValue(s.get("animation_speed_ms", 400))
 
+        self.win_width_slider.setValue(s.get("window_width", 800))
+        self.win_height_slider.setValue(s.get("window_height", 220))
+
         self.keycap_toggle.setKeySequence(QKeySequence(s.get("shortcut_toggle_overlay", "Ctrl+H")))
         self.keycap_vis_toggle.setKeySequence(QKeySequence(s.get("shortcut_toggle_visualizer", "Ctrl+Shift+V")))
+        self.keycap_game_toggle.setKeySequence(QKeySequence(s.get("shortcut_toggle_game_overlay", "Ctrl+Shift+G")))
         self.keycap_refresh.setKeySequence(QKeySequence(s.get("shortcut_refresh", "Ctrl+R")))
         self.keycap_minus.setKeySequence(QKeySequence(s.get("shortcut_nudge_minus", "Ctrl+Left")))
         self.keycap_plus.setKeySequence(QKeySequence(s.get("shortcut_nudge_plus", "Ctrl+Right")))
@@ -1618,42 +1685,28 @@ class SettingsDialog(QDialog):
         # Visualizer Studio settings loading
         self.vis_enable_switch.setChecked_silent(s.get("visualizer_enabled", False))
         self.vis_style_combo.setCurrentText(s.get("visualizer_style", "Pill Bars"))
-
         shape = s.get("visualizer_shape", "Pill")
         self.vis_shape_combo.setCurrentText(shape)
         self.vis_corner_radius_slider.setValue(s.get("visualizer_corner_radius", 4))
         self._on_vis_shape_changed(shape)
-
-        # Game Overlay loading
-        overlay_mode = s.get("visualizer_overlay_mode", "Normal")
-        self.vis_overlay_mode_combo.setCurrentText(overlay_mode)
-        self.vis_overlay_screen_combo.setCurrentText(s.get("visualizer_overlay_screen", "Active Game Monitor"))
-        self.vis_overlay_pos_combo.setCurrentText(s.get("visualizer_overlay_position", "Bottom"))
-        self.vis_overlay_margin_slider.setValue(s.get("visualizer_overlay_margin", 15))
-        follow_win = s.get("visualizer_follow_active_window", False)
-        self.vis_follow_window_switch.setChecked_silent(follow_win)
-        self.vis_inactive_behavior_combo.setCurrentText(s.get("visualizer_overlay_inactive_behavior", "Keep visible"))
-        self._on_vis_overlay_mode_changed(overlay_mode)
-        self._on_vis_follow_window_toggled(follow_win)
-
-        self.keycap_game_toggle.setKeySequence(QKeySequence(s.get("shortcut_toggle_game_overlay", "Ctrl+Shift+G")))
-
-        self.vis_orientation_combo.setCurrentText(s.get("visualizer_orientation", "Bottom").capitalize())
-        self.vis_width_slider.setValue(s.get("visualizer_width", 320))
-        self.vis_height_slider.setValue(s.get("visualizer_height", 64))
-        self.vis_bar_width_slider.setValue(s.get("visualizer_bar_width", 4))
-        self.vis_bar_spacing_slider.setValue(s.get("visualizer_bar_spacing", 3))
-        self.vis_max_height_slider.setValue(s.get("visualizer_max_height", 100))
 
         auto_bars = s.get("visualizer_auto_bar_count", True)
         self.vis_auto_bar_switch.setChecked_silent(auto_bars)
         self.vis_manual_bar_slider.setValue(s.get("visualizer_bar_count", 32))
         self._on_vis_auto_bar_toggled(auto_bars)
 
+        orientation = s.get("visualizer_orientation", "BOTTOM").capitalize()
+        self.vis_orientation_combo.setCurrentText(orientation if orientation in ["Bottom", "Top", "Left", "Right"] else "Free")
+
+        self.vis_width_slider.setValue(s.get("visualizer_width", 320))
+        self.vis_height_slider.setValue(s.get("visualizer_height", 64))
+        self.vis_bar_width_slider.setValue(s.get("visualizer_bar_width", 4))
+        self.vis_bar_spacing_slider.setValue(s.get("visualizer_bar_spacing", 3))
+        self.vis_max_height_slider.setValue(s.get("visualizer_max_height", 100))
+
         color_mode = s.get("visualizer_color_mode", "Solid")
         self.vis_color_mode_combo.setCurrentText(color_mode)
         self.btn_vis_color.setColor(s.get("visualizer_color", "#FFFFFF"))
-
         stops = s.get("visualizer_gradient_stops", [
             {"pos": 0.0, "color": "#FF4D8D"},
             {"pos": 0.5, "color": "#8B5CF6"},
@@ -1667,7 +1720,12 @@ class SettingsDialog(QDialog):
         self.vis_sensitivity_slider.setValue(s.get("visualizer_sensitivity", 100))
         self.vis_smoothing_slider.setValue(s.get("visualizer_smoothing", 75))
         self.vis_click_through_switch.setChecked_silent(s.get("visualizer_click_through", False))
-        self.vis_top_switch.setChecked_silent(s.get("visualizer_always_on_top", True))
+
+        vis_layer_mode = s.get("visualizer_window_layer_mode", "Top" if s.get("visualizer_always_on_top", True) else "Normal")
+        vis_idx = self.vis_layer_combo.findData(vis_layer_mode)
+        if vis_idx >= 0:
+            self.vis_layer_combo.setCurrentIndex(vis_idx)
+
         self.vis_exclude_capture_switch.setChecked_silent(s.get("visualizer_exclude_from_capture", False))
 
         if hasattr(self, 'vis_preview'):
@@ -1730,6 +1788,8 @@ class SettingsDialog(QDialog):
 
     def _gather_settings(self) -> Dict[str, Any]:
         selected_source_id = self.source_combo.currentData()
+        layer_mode = self.layer_combo.currentData() or "Top"
+        vis_layer_mode = self.vis_layer_combo.currentData() or "Top"
         return {
             "font_family": self.font_combo.currentFont().family(),
             "font_size": self.font_size_slider.value(),
@@ -1748,7 +1808,12 @@ class SettingsDialog(QDialog):
             "shadow_enabled": self.shadow_switch.isChecked(),
             "shadow_color": self.btn_shadow_color.color(),
             "shadow_blur": self.shadow_blur_slider.value(),
-            "always_on_top": self.top_switch.isChecked(),
+            "window_width": self.win_width_slider.value(),
+            "window_height": self.win_height_slider.value(),
+            "window_x": self.working_settings.get("window_x", -1),
+            "window_y": self.working_settings.get("window_y", -1),
+            "window_layer_mode": layer_mode,
+            "always_on_top": (layer_mode == "Top"),
             "lock_position": self.lock_switch.isChecked(),
             "click_through": self.click_through_switch.isChecked(),
             "exclude_from_capture": self.exclude_capture_switch.isChecked(),
@@ -1788,7 +1853,8 @@ class SettingsDialog(QDialog):
             "visualizer_sensitivity": self.vis_sensitivity_slider.value(),
             "visualizer_smoothing": self.vis_smoothing_slider.value(),
             "visualizer_click_through": self.vis_click_through_switch.isChecked(),
-            "visualizer_always_on_top": self.vis_top_switch.isChecked(),
+            "visualizer_window_layer_mode": vis_layer_mode,
+            "visualizer_always_on_top": (vis_layer_mode == "Top"),
             "visualizer_exclude_from_capture": self.vis_exclude_capture_switch.isChecked(),
 
             # Game Overlay Settings
@@ -1896,7 +1962,8 @@ class SettingsDialog(QDialog):
             f"Python Version: {sys.version.split()[0]}",
             f"PyQt6 Version: {getattr(__import__('PyQt6.QtCore', fromlist=['PYQT_VERSION_STR']), 'PYQT_VERSION_STR', '6.x')}",
             f"Selected Target Source: {self.working_settings.get('selected_media_source', 'Auto-Detect')}",
-            f"Always on Top: {self.working_settings.get('always_on_top', True)}",
+            f"Window Layer Mode: {self.working_settings.get('window_layer_mode', 'Top')}",
+            f"Visualizer Layer Mode: {self.working_settings.get('visualizer_window_layer_mode', 'Top')}",
             f"Click-Through Mode: {self.working_settings.get('click_through', False)}",
             f"Screen Capture Exclusion: {self.working_settings.get('exclude_from_capture', False)}",
             f"Cached Songs (Disk): {cached_count} files",

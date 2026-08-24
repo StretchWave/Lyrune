@@ -21,6 +21,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "text_align": "Center",
     "show_song_info": True,
     "always_on_top": True,
+    "window_layer_mode": "Top",   # "Top" (Always on Top / Hover), "Normal", "Bottom" (Background / Desktop layer)
     "lock_position": False,
     "window_width": 800,
     "window_height": 220,
@@ -75,6 +76,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "visualizer_smoothing": 75,
     "visualizer_click_through": False,
     "visualizer_always_on_top": True,
+    "visualizer_window_layer_mode": "Top", # "Top" (Hover over all), "Normal", "Bottom" (Background / Desktop layer)
     "visualizer_exclude_from_capture": False,
     "shortcut_toggle_visualizer": "Ctrl+Shift+V",
 

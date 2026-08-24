@@ -244,14 +244,15 @@ class VisualizerManager(QObject):
         """Low-frequency (500ms) background tracking for active game/window transitions."""
         s = self.settings_mgr.settings
         mode = s.get("visualizer_overlay_mode", "Normal")
-        always_top = s.get("visualizer_always_on_top", True)
+        layer_mode = s.get("visualizer_window_layer_mode", "Top" if s.get("visualizer_always_on_top", True) else "Normal")
+        is_top = (layer_mode == "Top")
 
-        if mode != "Game Overlay" and not always_top:
+        if mode != "Game Overlay" and not is_top:
             self._stop_game_tracking()
             return
 
         # Windows Z-guard: maintain topmost Z-order above fullscreen games without stealing focus
-        if self.window.isVisible() and always_top:
+        if self.window.isVisible() and is_top:
             hwnd = int(self.window.winId()) if self.window.winId() else 0
             if hwnd and (is_window_below_any_topmost(hwnd) or is_window_below_foreground(hwnd)):
                 reassert_window_topmost(hwnd)
@@ -291,12 +292,13 @@ class VisualizerManager(QObject):
             self.set_style(style_name)
 
         mode = s.get("visualizer_overlay_mode", "Normal")
-        always_top = s.get("visualizer_always_on_top", True)
+        layer_mode = s.get("visualizer_window_layer_mode", "Top" if s.get("visualizer_always_on_top", True) else "Normal")
+        is_top = (layer_mode == "Top")
 
         if mode == "Game Overlay":
             self._apply_game_overlay_position()
             self._start_game_tracking()
-        elif always_top:
+        elif is_top:
             self._start_game_tracking()
         else:
             self._stop_game_tracking()
