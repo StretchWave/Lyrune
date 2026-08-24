@@ -249,9 +249,9 @@ def extract_dominant_accent(pixmap: Optional[QPixmap], default_accent: str = "#2
 # Vector Icons
 # ==============================================================================
 
-def get_icon(name: str, color: str = "#C5C8D4") -> QIcon:
+def get_icon(name: str, color: str = "#C5C8D4", size: int = 24) -> QIcon:
     """Renders crisp vector line icons."""
-    size = 24
+    size = max(12, int(size))
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
 
@@ -409,6 +409,73 @@ def get_icon(name: str, color: str = "#C5C8D4") -> QIcon:
 def get_app_icon() -> QIcon:
     """App window icon."""
     return get_icon("visualizer", color="#2ED573")
+
+
+# ==============================================================================
+# GlassButton Component
+# ==============================================================================
+
+class GlassButton(QPushButton):
+    """
+    Sleek modern translucent glass button with primary/secondary variants,
+    hover micro-animations, and optional vector icons.
+    """
+    def __init__(self, text: str = "", variant: str = "secondary", icon_name: Optional[str] = None, parent: Optional[QWidget] = None):
+        super().__init__(text, parent)
+        self._variant = variant
+        self.setFixedHeight(32)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        if icon_name:
+            col = "#0A0D14" if variant == "primary" else "#C5C8D4"
+            self.setIcon(get_icon(icon_name, col))
+
+        if variant == "primary":
+            self.setStyleSheet("""
+                QPushButton {
+                    background: #2ED573;
+                    color: #0A0D14;
+                    font-weight: 700;
+                    font-size: 12px;
+                    border: none;
+                    border-radius: 8px;
+                    padding: 0 14px;
+                }
+                QPushButton:hover {
+                    background: #26AF5F;
+                }
+                QPushButton:pressed {
+                    background: #1F8F4D;
+                }
+                QPushButton:disabled {
+                    background: rgba(46, 213, 115, 0.3);
+                    color: rgba(10, 13, 20, 0.4);
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QPushButton {
+                    background: rgba(30, 35, 46, 0.65);
+                    color: #F0F1F5;
+                    font-weight: 600;
+                    font-size: 12px;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 8px;
+                    padding: 0 14px;
+                }
+                QPushButton:hover {
+                    background: rgba(255, 255, 255, 0.10);
+                    border-color: rgba(255, 255, 255, 0.20);
+                    color: #FFFFFF;
+                }
+                QPushButton:pressed {
+                    background: rgba(255, 255, 255, 0.05);
+                }
+                QPushButton:disabled {
+                    background: rgba(20, 24, 34, 0.4);
+                    color: #525666;
+                    border-color: rgba(255, 255, 255, 0.03);
+                }
+            """)
 
 
 # ==============================================================================
@@ -614,6 +681,61 @@ class BentoCard(GlassCard):
         super().mousePressEvent(event)
 
 
+class BentoStatusCard(GlassCard):
+    """
+    Clickable Bento grid status card displaying title, status, subtitle, and badge icon.
+    """
+    clicked = pyqtSignal()
+
+    def __init__(self, title: str, status: str, subtitle: str, badge_text: str, badge_color: str, parent: Optional[QWidget] = None):
+        super().__init__(radius=14, elevated=True, interactive=True, parent=parent)
+        self.setFixedHeight(82)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(10)
+
+        # Info column
+        info_v = QVBoxLayout()
+        info_v.setSpacing(2)
+
+        title_h = QHBoxLayout()
+        self.lbl_title = QLabel(title, self)
+        self.lbl_title.setStyleSheet("font-size: 13px; font-weight: 700; color: #FFFFFF;")
+        self.lbl_status = QLabel(f"• {status}", self)
+        self.lbl_status.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {badge_color};")
+        title_h.addWidget(self.lbl_title)
+        title_h.addWidget(self.lbl_status)
+        title_h.addStretch()
+
+        self.lbl_sub = QLabel(subtitle, self)
+        self.lbl_sub.setStyleSheet("font-size: 10px; color: #8A8D9B;")
+
+        info_v.addLayout(title_h)
+        info_v.addWidget(self.lbl_sub)
+        layout.addLayout(info_v, 1)
+
+        # Right circular badge
+        self.lbl_badge = QLabel(badge_text, self)
+        self.lbl_badge.setFixedSize(30, 30)
+        self.lbl_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_badge.setStyleSheet(f"""
+            background: rgba(30, 35, 46, 0.85);
+            color: {badge_color};
+            font-size: 12px;
+            font-weight: 700;
+            border: 1px solid {badge_color};
+            border-radius: 15px;
+        """)
+        layout.addWidget(self.lbl_badge)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 # ==============================================================================
 # DynamicIslandBar Component (Title Bar Center)
 # ==============================================================================
@@ -707,6 +829,23 @@ class DynamicIslandBar(GlassCard):
 
         if pixmap and not pixmap.isNull():
             self.lbl_art.setPixmap(pixmap.scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
+        self.btn_play.setIcon(get_icon("pause" if is_playing else "play", color="#2ED573"))
+
+    def update_track(self, title: str, artist: str):
+        display_title = title or "Lyrune Studio"
+        display_artist = artist or "No track playing"
+        fm = QFontMetrics(self.lbl_title.font())
+        self.lbl_title.setText(fm.elidedText(display_title, Qt.TextElideMode.ElideRight, 140))
+        self.lbl_title.setToolTip(display_title)
+        fm_a = QFontMetrics(self.lbl_artist.font())
+        self.lbl_artist.setText(fm_a.elidedText(display_artist, Qt.TextElideMode.ElideRight, 140))
+        self.lbl_artist.setToolTip(display_artist)
+
+    def update_artwork(self, pixmap: Optional[QPixmap]):
+        if pixmap and not pixmap.isNull():
+            self.lbl_art.setPixmap(pixmap.scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
+
+    def set_playing(self, is_playing: bool):
         self.btn_play.setIcon(get_icon("pause" if is_playing else "play", color="#2ED573"))
 
 
@@ -1101,3 +1240,258 @@ class KeycapWidget(QWidget):
 
     def keySequence(self) -> QKeySequence:
         return QKeySequence(self._seq)
+
+
+# ==============================================================================
+# MetricGaugeCard
+# ==============================================================================
+
+class MetricGaugeCard(GlassCard):
+    """Compact resource gauge displaying a value, label, and progress meter."""
+    def __init__(self, title: str, value: str, sublabel: str = "", pct: int = 0, parent: Optional[QWidget] = None):
+        super().__init__(radius=12, elevated=True, parent=parent)
+        self.setFixedHeight(75)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(4)
+
+        top_h = QHBoxLayout()
+        self.lbl_title = QLabel(title, self)
+        self.lbl_title.setStyleSheet("font-size: 11px; font-weight: 600; color: #8A8D9B;")
+        self.lbl_val = QLabel(value, self)
+        self.lbl_val.setStyleSheet("font-size: 13px; font-weight: 700; color: #2ED573;")
+        top_h.addWidget(self.lbl_title)
+        top_h.addStretch()
+        top_h.addWidget(self.lbl_val)
+        layout.addLayout(top_h)
+
+        self.lbl_sub = QLabel(sublabel, self)
+        self.lbl_sub.setStyleSheet("font-size: 10px; color: #525666;")
+        layout.addWidget(self.lbl_sub)
+
+    def set_metric(self, value: str, sublabel: str = ""):
+        self.lbl_val.setText(value)
+        if sublabel:
+            self.lbl_sub.setText(sublabel)
+
+
+# ==============================================================================
+# CommandPaletteDialog (Ctrl+K Omnibox)
+# ==============================================================================
+
+class CommandPaletteDialog(QWidget):
+    """
+    Omnibox command palette and instant search modal.
+    """
+    actionTriggered = pyqtSignal(str)  # action id or page index
+
+    def __init__(self, actions_list: List[Dict[str, Any]], parent: Optional[QWidget] = None):
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(540, 360)
+        self._actions = actions_list
+        self._filtered = list(actions_list)
+
+        self._init_ui()
+
+    def _init_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        card = GlassCard(radius=16, elevated=True, parent=self)
+        c_layout = QVBoxLayout(card)
+        c_layout.setContentsMargins(14, 14, 14, 14)
+        c_layout.setSpacing(10)
+
+        # Search box
+        search_h = QHBoxLayout()
+        lbl_icon = QLabel(self)
+        lbl_icon.setPixmap(get_icon("search", "#2ED573", 16).pixmap(16, 16))
+        self.txt_search = QLineEdit(self)
+        self.txt_search.setPlaceholderText("Type a command or search settings (e.g. 'wallpaper', 'opacity', 'lyrics')...")
+        self.txt_search.textChanged.connect(self._on_search)
+        search_h.addWidget(lbl_icon)
+        search_h.addWidget(self.txt_search, 1)
+        c_layout.addLayout(search_h)
+
+        # Results area
+        self.results_widget = QWidget(self)
+        self.results_layout = QVBoxLayout(self.results_widget)
+        self.results_layout.setContentsMargins(0, 4, 0, 0)
+        self.results_layout.setSpacing(4)
+        c_layout.addWidget(self.results_widget, 1)
+
+        self._render_results()
+        root.addWidget(card)
+
+    def _on_search(self, query: str):
+        q = query.strip().lower()
+        if not q:
+            self._filtered = list(self._actions)
+        else:
+            self._filtered = [
+                a for a in self._actions
+                if q in a["name"].lower() or q in a.get("desc", "").lower() or q in a.get("category", "").lower()
+            ]
+        self._render_results()
+
+    def _render_results(self):
+        while self.results_layout.count():
+            item = self.results_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for idx, item in enumerate(self._filtered[:6]):
+            btn = QPushButton(f"  {item['name']}  —  {item.get('desc', '')}", self)
+            btn.setFixedHeight(34)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: rgba(30, 35, 46, 0.65);
+                    color: #F0F1F5;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 8px;
+                    text-align: left;
+                    font-size: 12px;
+                    padding-left: 10px;
+                }
+                QPushButton:hover {
+                    background: rgba(46, 213, 115, 0.18);
+                    border-color: #2ED573;
+                    color: #FFFFFF;
+                }
+            """)
+            action_id = item["id"]
+            btn.clicked.connect(lambda _, a=action_id: self._trigger(a))
+            self.results_layout.addWidget(btn)
+
+        self.results_layout.addStretch()
+
+    def _trigger(self, action_id: str):
+        self.actionTriggered.emit(action_id)
+        self.close()
+
+
+# ==============================================================================
+# ManualLyricSearchDialog
+# ==============================================================================
+
+class ManualLyricSearchDialog(QWidget):
+    """
+    Interactive modal dialog to search LRCLIB manually, inspect candidate results
+    with match confidence meters, and bind chosen lyrics.
+    """
+    lyricsSelected = pyqtSignal(str, str, str, str)  # artist, title, synced, unsynced
+
+    def __init__(self, lyrics_client, current_artist: str = "", current_title: str = "", parent: Optional[QWidget] = None):
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(620, 480)
+        self.lyrics_client = lyrics_client
+        self._artist = current_artist
+        self._title = current_title
+
+        self._init_ui()
+
+    def _init_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        card = GlassCard(radius=18, elevated=True, parent=self)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
+
+        # Header
+        hdr = QHBoxLayout()
+        lbl_title = QLabel("Find & Correct Lyrics", self)
+        lbl_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #FFFFFF;")
+        btn_close = QPushButton("✕", self)
+        btn_close.setFixedSize(24, 24)
+        btn_close.setStyleSheet("background: transparent; color: #8A8D9B; font-weight: bold; border: none;")
+        btn_close.clicked.connect(self.close)
+        hdr.addWidget(lbl_title)
+        hdr.addStretch()
+        hdr.addWidget(btn_close)
+        layout.addLayout(hdr)
+
+        # Inputs
+        inp_h = QHBoxLayout()
+        self.txt_artist = QLineEdit(self._artist, self)
+        self.txt_artist.setPlaceholderText("Artist name...")
+        self.txt_title = QLineEdit(self._title, self)
+        self.txt_title.setPlaceholderText("Track title...")
+        btn_search = GlassButton("Search LRCLIB", variant="primary", icon_name="search", parent=self)
+        btn_search.clicked.connect(self._do_search)
+
+        inp_h.addWidget(self.txt_artist, 1)
+        inp_h.addWidget(self.txt_title, 1)
+        inp_h.addWidget(btn_search)
+        layout.addLayout(inp_h)
+
+        # Candidates scroll area container
+        self.results_container = QWidget(self)
+        self.results_v = QVBoxLayout(self.results_container)
+        self.results_v.setContentsMargins(0, 0, 0, 0)
+        self.results_v.setSpacing(6)
+        layout.addWidget(self.results_container, 1)
+
+        root.addWidget(card)
+        if self._artist or self._title:
+            self._do_search()
+
+    def _do_search(self):
+        art = self.txt_artist.text().strip()
+        tit = self.txt_title.text().strip()
+
+        while self.results_v.count():
+            item = self.results_v.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        candidates = self.lyrics_client.search_candidates(art, tit)
+        if not candidates:
+            lbl_none = QLabel("No lyrics candidates found on LRCLIB. Try alternative spellings.", self)
+            lbl_none.setStyleSheet("color: #8A8D9B; font-size: 12px; padding: 20px;")
+            self.results_v.addWidget(lbl_none)
+            return
+
+        for c in candidates[:5]:
+            row = GlassCard(radius=10, elevated=False, parent=self)
+            row_h = QHBoxLayout(row)
+            row_h.setContentsMargins(12, 8, 12, 8)
+
+            info_v = QVBoxLayout()
+            lbl_track = QLabel(f"{c['title']}  •  {c['artist']}", row)
+            lbl_track.setStyleSheet("font-size: 12px; font-weight: 700; color: #FFFFFF;")
+
+            sync_badge = "Synced LRC" if c["has_synced"] else "Plain Text"
+            sync_color = "#2ED573" if c["has_synced"] else "#8A8D9B"
+            lbl_meta = QLabel(f"{sync_badge}  |  Confidence: {c['confidence_pct']}% ({c['confidence_level']})", row)
+            lbl_meta.setStyleSheet(f"font-size: 10px; font-weight: 600; color: {sync_color};")
+
+            info_v.addWidget(lbl_track)
+            info_v.addWidget(lbl_meta)
+            row_h.addLayout(info_v, 1)
+
+            btn_bind = GlassButton("Select Lyrics", variant="primary", parent=row)
+            btn_bind.setFixedHeight(28)
+            btn_bind.clicked.connect(lambda _, item=c: self._bind(item))
+            row_h.addWidget(btn_bind)
+
+            self.results_v.addWidget(row)
+
+        self.results_v.addStretch()
+
+    def _bind(self, item: dict):
+        self.lyrics_client.bind_custom_lyrics(
+            item["artist"], item["title"],
+            item["synced_lyrics"], item["plain_lyrics"]
+        )
+        self.lyricsSelected.emit(
+            item["artist"], item["title"],
+            item["synced_lyrics"], item["plain_lyrics"]
+        )
+        self.close()
+

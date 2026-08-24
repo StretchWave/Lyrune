@@ -101,6 +101,20 @@ class AppLogger(QObject):
 
         self.log_signal.emit(ts, message)
 
+    def get_history(self) -> list:
+        """Returns formatted list of all log entries."""
+        with self._lock:
+            return [f"[{ts}] {msg}" for ts, msg in self.history]
+
+    def clear(self) -> None:
+        """Clears the log history."""
+        with self._lock:
+            self.history.clear()
+            self._seen_keys.clear()
+
+
+event_logger = AppLogger.instance()
+
 
 def log_event(message: str, force: bool = False) -> None:
     """Module-level helper to log messages."""

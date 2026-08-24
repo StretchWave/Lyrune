@@ -1,8 +1,8 @@
 """
-settings_dialog.py — Modern Translucent Cinematic Glass Desktop UI for Lyrune.
+settings_dialog.py — Modern Translucent Cinematic Glass Desktop Studio for Lyrune.
 
-Implements the unified glass desktop design with dedicated Studios, real live previews,
-frameless window management, and mathematical coordinate accuracy.
+Full 11-page information architecture, real bi-directional state binding, command palette (Ctrl+K),
+manual lyrics correction modal, Wallpaper/Visualizer studio live previews, and diagnostics exporter.
 """
 
 import os
@@ -15,37 +15,40 @@ from typing import Dict, Any, Optional, List, Tuple
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QPointF, QRectF, QRect, QTimer, QSize
 from PyQt6.QtGui import (
     QFont, QColor, QKeySequence, QMouseEvent, QPainter, QBrush, QPen,
-    QLinearGradient, QRadialGradient, QPixmap, QCursor, QPainterPath, QFontMetrics
+    QLinearGradient, QRadialGradient, QPixmap, QCursor, QPainterPath, QFontMetrics, QShortcut
 )
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QPushButton, QComboBox, QFontComboBox, QTextEdit, QCheckBox,
     QListWidget, QListWidgetItem, QStackedWidget, QScrollArea, QFrame,
     QApplication, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QFileDialog, QSizePolicy, QToolButton, QSlider
+    QFileDialog, QSizePolicy, QToolButton, QSlider, QMessageBox
 )
 
 from lyrune.ui_theme import (
     PALETTE, DARK_THEME_STYLESHEET, MENU_STYLESHEET, get_icon, get_app_icon,
-    extract_dominant_accent, paint_atmospheric_background, GlassCard, BentoCard,
+    extract_dominant_accent, paint_atmospheric_background, GlassCard, BentoCard, BentoStatusCard,
     DynamicIslandBar, SegmentedSwitch, SubTabRow, ToggleSwitch, ValueSlider,
-    ColorSwatchButton, KeycapWidget
+    ColorSwatchButton, KeycapWidget, CommandPaletteDialog, ManualLyricSearchDialog,
+    MetricGaugeCard, GlassButton
 )
-from lyrune.settings_manager import SettingsManager, PRESETS
-from lyrune.logger import AppLogger
+from lyrune.settings_manager import SettingsManager, DEFAULT_SETTINGS, PRESETS
+from lyrune.logger import event_logger, log_event
 from lyrune.animation_engine import LyricsRenderer
 from lyrune.lrclib_client import LRCLibClient
 from lyrune.visualizer import BarVisualizer, AudioData
-from lyrune.window_utils import get_available_screen_options
+from lyrune.window_utils import get_available_screen_options, enable_acrylic_blur
 from lyrune.wallpaper.preview_widget import WallpaperPreviewWidget
 from lyrune.wallpaper.model import WallpaperConfig, MediaSnapshot
 from lyrune.wallpaper.monitor import get_wallpaper_display_options
+from lyrune.shortcuts import SHORTCUT_DEFINITIONS, find_shortcut_conflicts, normalize_shortcut_key
+from lyrune.diagnostics import get_subsystem_health, generate_full_diagnostics_report
 
 
 class VisualizerPreviewWidget(QWidget):
     """
     Live interactive preview canvas for the visualizer inside SettingsDialog.
-    Runs simulated musical frequencies at 60 FPS on glass background.
+    Supports DEMO mode (simulated frequencies) and LIVE AUDIO mode (WASAPI loopback).
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -53,19 +56,28 @@ class VisualizerPreviewWidget(QWidget):
         self.setMinimumWidth(280)
         self.renderer = BarVisualizer()
         self.renderer.set_orientation("BOTTOM")
+        self._mode = "Demo"
         self._phase = 0.0
 
         self._timer = QTimer(self)
-        self._timer.setInterval(16)
+        self._timer.setInterval(16)  # 60 FPS
         self._timer.timeout.connect(self._on_tick)
         self._timer.start()
+
+    def set_preview_mode(self, mode: str):
+        self._mode = mode
 
     def update_style(self, settings_dict: Dict[str, Any]):
         self.renderer.set_style(settings_dict)
         self.update()
 
+    def feed_live_audio(self, audio_data: AudioData):
+        if self._mode == "Live Audio":
+            self.renderer.update_audio(audio_data)
+            self.update()
+
     def _on_tick(self):
-        if not self.isVisible():
+        if not self.isVisible() or self._mode != "Demo":
             return
         self._phase += 0.05
         count = self.renderer.get_bar_count()
@@ -94,51 +106,14 @@ class VisualizerPreviewWidget(QWidget):
         self.renderer.paint(painter, draw_rect)
 
 
-class GradientPreviewBar(QWidget):
-    """Visual gradient preview strip."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(22)
-        self.stops: List[Dict[str, Any]] = []
-
-    def set_stops(self, stops: List[Dict[str, Any]]):
-        self.stops = list(stops)
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        grad = QLinearGradient(rect.left(), rect.center().y(), rect.right(), rect.center().y())
-
-        if not self.stops:
-            grad.setColorAt(0.0, QColor("#2ED573"))
-            grad.setColorAt(1.0, QColor("#1DB954"))
-        else:
-            for s in sorted(self.stops, key=lambda x: x.get("position", 0.0)):
-                pos = max(0.0, min(1.0, float(s.get("position", 0.0))))
-                col = QColor(s.get("color", "#2ED573"))
-                if not col.isValid():
-                    col = QColor("#2ED573")
-                col.setAlphaF(max(0.0, min(1.0, float(s.get("opacity", 1.0)))))
-                grad.setColorAt(pos, col)
-
-        painter.setBrush(QBrush(grad))
-        painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
-        painter.drawRoundedRect(rect, 6, 6)
-
-
 class CustomTitleBar(QWidget):
     """
-    Modern glass title bar featuring:
-      - Left: Logo icon + 'LYRUNE' bold text
-      - Center: Floating Dynamic Island media pill
-      - Right: Window controls (Theme, Minimize, Maximize/Restore, Close)
+    Modern glass title bar with logo, Dynamic Island media pill, and window controls.
     """
     minimizeClicked = pyqtSignal()
     maximizeClicked = pyqtSignal()
     closeClicked = pyqtSignal()
+    commandPaletteClicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -148,183 +123,166 @@ class CustomTitleBar(QWidget):
         layout.setContentsMargins(18, 6, 18, 6)
         layout.setSpacing(12)
 
-        # Left branding
-        brand_layout = QHBoxLayout()
-        brand_layout.setSpacing(8)
+        # Left: App Logo
+        lbl_logo = QLabel(self)
+        lbl_logo.setPixmap(get_app_icon().pixmap(20, 20))
+        lbl_brand = QLabel("LYRUNE", self)
+        lbl_brand.setStyleSheet("font-weight: 800; font-size: 13px; letter-spacing: 1.5px; color: #FFFFFF;")
 
-        self.lbl_logo = QLabel(self)
-        self.lbl_logo.setPixmap(get_icon("visualizer", color="#2ED573").pixmap(20, 20))
-        brand_layout.addWidget(self.lbl_logo)
+        layout.addWidget(lbl_logo)
+        layout.addWidget(lbl_brand)
+        layout.addSpacing(16)
 
-        self.lbl_name = QLabel("LYRUNE", self)
-        self.lbl_name.setStyleSheet("font-size: 13px; font-weight: 800; letter-spacing: 1.5px; color: #FFFFFF;")
-        brand_layout.addWidget(self.lbl_name)
-        layout.addLayout(brand_layout)
-
-        layout.addStretch(1)
-
-        # Center Dynamic Island
+        # Center: Dynamic Island Media Pill
         self.dynamic_island = DynamicIslandBar(self)
-        layout.addWidget(self.dynamic_island)
+        layout.addWidget(self.dynamic_island, 1)
 
-        layout.addStretch(1)
-
-        # Right window buttons
-        ctrl_layout = QHBoxLayout()
-        ctrl_layout.setSpacing(6)
-
-        self.btn_theme = QPushButton(self)
-        self.btn_theme.setIcon(get_icon("moon", color="#C5C8D4"))
-        self.btn_theme.setFixedSize(28, 28)
-        self.btn_theme.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_theme.setStyleSheet("""
-            QPushButton { background: transparent; border: none; border-radius: 6px; }
-            QPushButton:hover { background: rgba(255, 255, 255, 0.08); }
+        # Right: Omnibox Trigger + Window Actions
+        self.btn_cmd = QPushButton(" 🔍 Search (Ctrl+K) ", self)
+        self.btn_cmd.setFixedHeight(28)
+        self.btn_cmd.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cmd.setStyleSheet("""
+            QPushButton {
+                background: rgba(30, 35, 46, 0.65);
+                color: #8A8D9B;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 7px;
+                font-size: 11px;
+                font-weight: 600;
+                padding: 0 8px;
+            }
+            QPushButton:hover {
+                color: #FFFFFF;
+                border-color: #2ED573;
+            }
         """)
-        ctrl_layout.addWidget(self.btn_theme)
+        self.btn_cmd.clicked.connect(self.commandPaletteClicked.emit)
+        layout.addWidget(self.btn_cmd)
 
         self.btn_min = QPushButton(self)
-        self.btn_min.setIcon(get_icon("minus", color="#C5C8D4"))
+        self.btn_min.setIcon(get_icon("minimize", "#C5C8D4", 12))
         self.btn_min.setFixedSize(28, 28)
-        self.btn_min.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_min.setStyleSheet("""
-            QPushButton { background: transparent; border: none; border-radius: 6px; }
-            QPushButton:hover { background: rgba(255, 255, 255, 0.08); }
-        """)
+        self.btn_min.setStyleSheet("background: transparent; border: none; border-radius: 6px;")
         self.btn_min.clicked.connect(self.minimizeClicked.emit)
-        ctrl_layout.addWidget(self.btn_min)
 
         self.btn_max = QPushButton(self)
-        self.btn_max.setIcon(get_icon("maximize", color="#C5C8D4"))
+        self.btn_max.setIcon(get_icon("maximize", "#C5C8D4", 12))
         self.btn_max.setFixedSize(28, 28)
-        self.btn_max.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_max.setStyleSheet("""
-            QPushButton { background: transparent; border: none; border-radius: 6px; }
-            QPushButton:hover { background: rgba(255, 255, 255, 0.08); }
-        """)
+        self.btn_max.setStyleSheet("background: transparent; border: none; border-radius: 6px;")
         self.btn_max.clicked.connect(self.maximizeClicked.emit)
-        ctrl_layout.addWidget(self.btn_max)
 
         self.btn_close = QPushButton(self)
-        self.btn_close.setIcon(get_icon("close", color="#C5C8D4"))
+        self.btn_close.setIcon(get_icon("close", "#C5C8D4", 12))
         self.btn_close.setFixedSize(28, 28)
-        self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_close.setStyleSheet("""
-            QPushButton { background: transparent; border: none; border-radius: 6px; }
-            QPushButton:hover { background: rgba(255, 71, 87, 0.35); color: #FF4757; }
-        """)
+        self.btn_close.setStyleSheet("background: transparent; border: none; border-radius: 6px;")
         self.btn_close.clicked.connect(self.closeClicked.emit)
-        ctrl_layout.addWidget(self.btn_close)
 
-        layout.addLayout(ctrl_layout)
+        layout.addWidget(self.btn_min)
+        layout.addWidget(self.btn_max)
+        layout.addWidget(self.btn_close)
 
-    def mouseDoubleClickEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MouseButton.LeftButton:
-            win = self.window()
-            if hasattr(win, "_toggle_maximize_restore"):
-                win._toggle_maximize_restore()
+    def set_maximized_state(self, is_max: bool):
+        icon_name = "restore" if is_max else "maximize"
+        self.btn_max.setIcon(get_icon(icon_name, "#C5C8D4", 12))
 
 
 class SettingsDialog(QDialog):
     """
-    Modern translucent cinematic desktop music dashboard and settings studio.
-    Provides complete, unified controls for Wallpaper Studio, Visualizer Studio,
-    Overlay Appearance, Typography, Behavior, Shortcuts, and Diagnostics.
+    Lyrune Studio Desktop Master Window.
+    Full 11-page information architecture with bi-directional bindings and transaction semantics.
     """
     settings_changed = pyqtSignal(dict)
 
     def __init__(self, settings_manager: SettingsManager, player=None, parent=None):
         super().__init__(parent)
-        self.settings_manager = settings_manager
+        self.settings_mgr = settings_manager
         self.player = player
-        self.working_settings = dict(settings_manager.settings)
-        self._is_initializing = True
-        self._current_pixmap: Optional[QPixmap] = None
-        self._ambient_accent = QColor("#2ED573")
-        self._log_connected = False
+        self.lyrics_client = LRCLibClient()
 
-        # Window state & Frameless resize support
-        self._drag_pos: Optional[QPoint] = None
+        # Working settings transaction state
+        self.saved_settings: Dict[str, Any] = dict(self.settings_mgr.settings)
+        self.working_settings: Dict[str, Any] = dict(self.saved_settings)
+        self._undo_stack: List[Dict[str, Any]] = [dict(self.working_settings)]
+        self._redo_stack: List[Dict[str, Any]] = []
+
+        self._ambient_accent: Optional[QColor] = None
+        self._is_maximized_custom: bool = False
+        self._pre_max_geometry: Optional[QRect] = None
+
+        # Frameless edge resizing
         self._resize_edge: Optional[str] = None
         self._resize_drag_start: Optional[QPoint] = None
         self._resize_start_geometry: Optional[QRect] = None
+        self.setMouseTracking(True)
 
-        self.setWindowTitle("Lyrune Studio")
         self.setWindowFlags(
             Qt.WindowType.Window |
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowMinMaxButtonsHint |
             Qt.WindowType.WindowSystemMenuHint
         )
-        self.resize(1060, 720)
-        self.setMinimumSize(920, 600)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMouseTracking(True)
         self.setStyleSheet(DARK_THEME_STYLESHEET)
-        self.setWindowIcon(get_app_icon())
+        self.setMinimumSize(960, 680)
+        self.resize(1080, 740)
 
         self._init_ui()
-        self._load_current_values()
+        self._setup_shortcuts()
+        self._connect_player_signals()
+        self._load_working_settings_to_ui()
 
-        # Connect live media polling
-        if self.player:
-            self._sync_media_loop()
-            self._media_poll_timer = QTimer(self)
-            self._media_poll_timer.setInterval(800)
-            self._media_poll_timer.timeout.connect(self._sync_media_loop)
-            self._media_poll_timer.start()
+    # === Window Management & Frameless Sizing ===
 
-        self._is_initializing = False
-        self._update_preview()
-
-        # Connect logger
+    def showEvent(self, event):
+        super().showEvent(event)
         try:
-            AppLogger.instance().log_signal.connect(self._append_log_entry)
-            self._log_connected = True
+            enable_acrylic_blur(int(self.winId()))
         except Exception:
             pass
-        self._load_log_history()
 
-    # === Window Behavior & Edge Resizing ===
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-    def _toggle_maximize_restore(self):
-        if self.isMaximized():
-            self.showNormal()
-            self.title_bar.btn_max.setIcon(get_icon("maximize", color="#C5C8D4"))
-        else:
-            self.showMaximized()
-            self.title_bar.btn_max.setIcon(get_icon("restore", color="#C5C8D4"))
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+
+        # 1. Atmospheric translucent cosmic nebula
+        paint_atmospheric_background(painter, rect, self._ambient_accent)
+
+        # 2. Translucent glass shell
+        painter.setBrush(QBrush(QColor(15, 18, 25, 130)))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(rect, 20, 20)
+
+        # 3. Outer window border
+        painter.setPen(QPen(QColor(255, 255, 255, 24), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, 20, 20)
+
+        # Specular line
+        painter.setPen(QPen(QColor(255, 255, 255, 16), 1))
+        painter.drawLine(QPointF(rect.left() + 20, rect.top()), QPointF(rect.right() - 20, rect.top()))
 
     def _determine_edge(self, pos: QPoint) -> Optional[str]:
-        if self.isMaximized():
+        if self._is_maximized_custom:
             return None
-        border = 8
-        w = self.width()
-        h = self.height()
-        x = pos.x()
-        y = pos.y()
+        margin = 6
+        w, h = self.width(), self.height()
+        x, y = pos.x(), pos.y()
 
-        left = x <= border
-        right = x >= w - border
-        top = y <= border
-        bottom = y >= h - border
+        on_left = x <= margin
+        on_right = x >= w - margin
+        on_top = y <= margin
+        on_bottom = y >= h - margin
 
-        if top and left:
-            return "top_left"
-        if top and right:
-            return "top_right"
-        if bottom and left:
-            return "bottom_left"
-        if bottom and right:
-            return "bottom_right"
-        if left:
-            return "left"
-        if right:
-            return "right"
-        if top:
-            return "top"
-        if bottom:
-            return "bottom"
+        if on_top and on_left: return "top_left"
+        if on_top and on_right: return "top_right"
+        if on_bottom and on_left: return "bottom_left"
+        if on_bottom and on_right: return "bottom_right"
+        if on_left: return "left"
+        if on_right: return "right"
+        if on_top: return "top"
+        if on_bottom: return "bottom"
         return None
 
     def mousePressEvent(self, event: QMouseEvent):
@@ -336,103 +294,97 @@ class SettingsDialog(QDialog):
                 self._resize_start_geometry = self.geometry()
                 event.accept()
                 return
-
-            # Check if clicking on title bar area for window dragging
-            if event.pos().y() <= 48 and not self.isMaximized():
-                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-                event.accept()
-                return
-
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
-        # Handle active resizing
         if self._resize_edge and self._resize_drag_start and self._resize_start_geometry:
-            diff = event.globalPosition().toPoint() - self._resize_drag_start
+            delta = event.globalPosition().toPoint() - self._resize_drag_start
             g = QRect(self._resize_start_geometry)
-            min_w = self.minimumWidth()
-            min_h = self.minimumHeight()
+            edge = self._resize_edge
 
-            if "left" in self._resize_edge:
-                new_w = max(min_w, g.width() - diff.x())
+            if "left" in edge:
+                new_w = max(self.minimumWidth(), g.width() - delta.x())
                 g.setLeft(g.right() - new_w)
-            if "right" in self._resize_edge:
-                new_w = max(min_w, g.width() + diff.x())
-                g.setWidth(new_w)
-            if "top" in self._resize_edge:
-                new_h = max(min_h, g.height() - diff.y())
+            elif "right" in edge:
+                g.setWidth(max(self.minimumWidth(), g.width() + delta.x()))
+
+            if "top" in edge:
+                new_h = max(self.minimumHeight(), g.height() - delta.y())
                 g.setTop(g.bottom() - new_h)
-            if "bottom" in self._resize_edge:
-                new_h = max(min_h, g.height() + diff.y())
-                g.setHeight(new_h)
+            elif "bottom" in edge:
+                g.setHeight(max(self.minimumHeight(), g.height() + delta.y()))
 
             self.setGeometry(g)
             event.accept()
             return
 
-        # Handle active window dragging
-        if self._drag_pos and event.buttons() == Qt.MouseButton.LeftButton and not self.isMaximized():
-            self.move(event.globalPosition().toPoint() - self._drag_pos)
-            event.accept()
-            return
-
-        # Update hover cursor for window edges
-        if not self.isMaximized():
-            edge = self._determine_edge(event.pos())
-            if edge in ("top_left", "bottom_right"):
-                self.setCursor(Qt.CursorShape.SizeFDiagCursor)
-            elif edge in ("top_right", "bottom_left"):
-                self.setCursor(Qt.CursorShape.SizeBDiagCursor)
-            elif edge in ("left", "right"):
-                self.setCursor(Qt.CursorShape.SizeHorCursor)
-            elif edge in ("top", "bottom"):
-                self.setCursor(Qt.CursorShape.SizeVerCursor)
-            else:
-                self.setCursor(Qt.CursorShape.ArrowCursor)
+        edge = self._determine_edge(event.pos())
+        if edge in ("top_left", "bottom_right"): self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        elif edge in ("top_right", "bottom_left"): self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+        elif edge in ("left", "right"): self.setCursor(Qt.CursorShape.SizeHorCursor)
+        elif edge in ("top", "bottom"): self.setCursor(Qt.CursorShape.SizeVerCursor)
+        else: self.setCursor(Qt.CursorShape.ArrowCursor)
 
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
-        self._drag_pos = None
         self._resize_edge = None
         self._resize_drag_start = None
         self._resize_start_geometry = None
-    def showEvent(self, event):
-        super().showEvent(event)
-        try:
-            from lyrune.window_utils import enable_acrylic_blur
-            enable_acrylic_blur(int(self.winId()))
-        except Exception:
-            pass
+        super().mouseReleaseEvent(event)
 
-    def paintEvent(self, event):
-        """Draws the atmospheric nebula background with organic color fields and specular frame."""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    def _toggle_maximize_restore(self):
+        if self._is_maximized_custom:
+            if self._pre_max_geometry:
+                self.setGeometry(self._pre_max_geometry)
+            self._is_maximized_custom = False
+        else:
+            self._pre_max_geometry = self.geometry()
+            screen = self.screen() or QApplication.primaryScreen()
+            if screen:
+                self.setGeometry(screen.availableGeometry())
+            self._is_maximized_custom = True
+        self.title_bar.set_maximized_state(self._is_maximized_custom)
 
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+    # === Shortcuts & Transactions ===
 
-        # 1. Atmospheric translucent cosmic nebula background
-        paint_atmospheric_background(painter, rect, self._ambient_accent)
+    def _setup_shortcuts(self):
+        QShortcut(QKeySequence("Ctrl+K"), self, self._open_command_palette)
+        QShortcut(QKeySequence("Ctrl+Z"), self, self._undo)
+        QShortcut(QKeySequence("Ctrl+Y"), self, self._redo)
 
-        # 2. Translucent shell overlay (~20-30% visual translucency)
-        painter.setBrush(QBrush(QColor(15, 18, 25, 130)))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(rect, 20, 20)
+    def _record_transaction(self):
+        self._undo_stack.append(dict(self.working_settings))
+        if len(self._undo_stack) > 30:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._update_unsaved_indicator()
 
-        # 3. Outer window border with specular highlight
-        border_pen = QPen(QColor(255, 255, 255, 24), 1)
-        painter.setPen(border_pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(rect, 20, 20)
+    def _undo(self):
+        if len(self._undo_stack) > 1:
+            self._redo_stack.append(self._undo_stack.pop())
+            self.working_settings = dict(self._undo_stack[-1])
+            self._load_working_settings_to_ui()
+            self._update_unsaved_indicator()
 
-        # Top specular highlight line
-        highlight_pen = QPen(QColor(255, 255, 255, 16), 1)
-        painter.setPen(highlight_pen)
-        painter.drawLine(
-            QPointF(rect.left() + 20, rect.top()),
-            QPointF(rect.right() - 20, rect.top())
-        )
+    def _redo(self):
+        if self._redo_stack:
+            state = self._redo_stack.pop()
+            self._undo_stack.append(state)
+            self.working_settings = dict(state)
+            self._load_working_settings_to_ui()
+            self._update_unsaved_indicator()
+
+    def _update_unsaved_indicator(self):
+        has_changes = (self.working_settings != self.saved_settings)
+        self.btn_apply.setEnabled(has_changes)
+        self.btn_cancel.setEnabled(has_changes)
+        if has_changes:
+            self.lbl_unsaved.setText("● Unsaved Changes")
+            self.lbl_unsaved.setStyleSheet("color: #FF4757; font-size: 11px; font-weight: 700;")
+        else:
+            self.lbl_unsaved.setText("All changes saved")
+            self.lbl_unsaved.setStyleSheet("color: #8A8D9B; font-size: 11px;")
 
     # === UI Construction ===
 
@@ -441,1256 +393,1113 @@ class SettingsDialog(QDialog):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # 1. Custom Title Bar
+        # 1. Title bar
         self.title_bar = CustomTitleBar(self)
         self.title_bar.minimizeClicked.connect(self.showMinimized)
         self.title_bar.maximizeClicked.connect(self._toggle_maximize_restore)
         self.title_bar.closeClicked.connect(self.reject)
-        self.title_bar.dynamic_island.playPauseClicked.connect(self._transport_play_pause)
-        self.title_bar.dynamic_island.prevClicked.connect(self._transport_prev)
-        self.title_bar.dynamic_island.nextClicked.connect(self._transport_next)
+        self.title_bar.commandPaletteClicked.connect(self._open_command_palette)
         root_layout.addWidget(self.title_bar)
 
-        # 2. Main Workspace Layout (Sidebar + Content Stack)
+        # 2. Main workspace layout (Sidebar + Stack)
         workspace = QWidget(self)
         ws_layout = QHBoxLayout(workspace)
         ws_layout.setContentsMargins(14, 4, 14, 10)
         ws_layout.setSpacing(14)
 
-        # 2A. Floating Sidebar
+        # 2A. Sidebar
         self.sidebar_card = GlassCard(radius=18, elevated=False, parent=workspace)
         self.sidebar_card.setFixedWidth(185)
         sb_layout = QVBoxLayout(self.sidebar_card)
         sb_layout.setContentsMargins(10, 14, 10, 14)
         sb_layout.setSpacing(4)
 
-        self._nav_buttons: List[QPushButton] = []
-        self._nav_items_data = [
-            ("overview", "Overview", 0),
-            ("SECTION", "DISPLAY", -1),
-            ("appearance", "Appearance", 1),
-            ("typography", "Typography", 2),
-            ("wallpaper", "Wallpaper Studio", 3),
-            ("visualizer", "Visualizer Studio", 4),
-            ("SECTION", "SYSTEM", -1),
-            ("behavior", "Behavior", 5),
-            ("shortcuts", "Shortcuts", 6),
-            ("advanced", "Advanced", 7),
+        # Nav items
+        self.nav_items = [
+            ("Home", "home", "Overview & live status"),
+            ("Media", "music", "Sources & priority"),
+            ("Lyrics", "lyrics", "Matching & sync"),
+            ("Wallpaper", "wallpaper", "Scene canvas & vinyl"),
+            ("Visualizer", "visualizer", "Live DSP spectrum"),
+            ("Appearance", "palette", "Themes & materials"),
+            ("Behavior", "sliders", "Window & capture"),
+            ("Shortcuts", "keyboard", "Global hotkeys"),
+            ("Performance", "zap", "Resource metrics"),
+            ("Diagnostics", "terminal", "Health & logs"),
+            ("Advanced", "settings", "Caches & profiles")
         ]
 
-        for icon_key, label, page_idx in self._nav_items_data:
-            if icon_key == "SECTION":
-                lbl_sec = QLabel(label, self.sidebar_card)
-                lbl_sec.setStyleSheet("font-size: 10px; font-weight: 700; color: #525666; letter-spacing: 1px; margin: 10px 6px 4px 6px;")
-                sb_layout.addWidget(lbl_sec)
-            else:
-                btn = QPushButton(f" {label}", self.sidebar_card)
-                btn.setIcon(get_icon(icon_key, color="#C5C8D4"))
-                btn.setFixedHeight(34)
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.clicked.connect(lambda _, idx=page_idx: self._select_nav(idx))
-                sb_layout.addWidget(btn)
-                self._nav_buttons.append(btn)
+        self.nav_buttons: List[QPushButton] = []
+        for idx, (label, icon_n, desc) in enumerate(self.nav_items):
+            btn = QPushButton(f"  {label}", self.sidebar_card)
+            btn.setIcon(get_icon(icon_n, "#C5C8D4", 16))
+            btn.setFixedHeight(34)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: transparent;
+                    color: #C5C8D4;
+                    font-size: 12px;
+                    font-weight: 600;
+                    border: none;
+                    border-radius: 8px;
+                    text-align: left;
+                    padding-left: 10px;
+                }
+                QPushButton:hover {
+                    background: rgba(255, 255, 255, 0.06);
+                    color: #FFFFFF;
+                }
+            """)
+            btn.clicked.connect(lambda _, i=idx: self._switch_nav_page(i))
+            sb_layout.addWidget(btn)
+            self.nav_buttons.append(btn)
 
-        sb_layout.addStretch(1)
+        sb_layout.addStretch()
 
-        # Spotify Connection Status Pill
-        self.spotify_status_card = GlassCard(radius=12, elevated=True, interactive=True, parent=self.sidebar_card)
-        self.spotify_status_card.setFixedHeight(50)
-        sp_layout = QHBoxLayout(self.spotify_status_card)
-        sp_layout.setContentsMargins(10, 6, 10, 6)
-        sp_layout.setSpacing(8)
-
-        sp_icon = QLabel(self.spotify_status_card)
-        sp_icon.setPixmap(get_icon("spotify", color="#1DB954").pixmap(20, 20))
-        sp_layout.addWidget(sp_icon)
-
-        sp_text_layout = QVBoxLayout()
-        sp_text_layout.setSpacing(1)
-        sp_lbl1 = QLabel("Spotify", self.spotify_status_card)
-        sp_lbl1.setStyleSheet("font-size: 11px; font-weight: 700; color: #FFFFFF;")
-        sp_text_layout.addWidget(sp_lbl1)
-
-        self.sp_lbl_status = QLabel("● Connected", self.spotify_status_card)
-        self.sp_lbl_status.setStyleSheet("font-size: 9px; color: #2ED573; font-weight: 600;")
-        sp_text_layout.addWidget(self.sp_lbl_status)
-        sp_layout.addLayout(sp_text_layout, 1)
-
-        lbl_sp_arr = QLabel(self.spotify_status_card)
-        lbl_sp_arr.setPixmap(get_icon("chevron_right", color="#525666").pixmap(12, 12))
-        sp_layout.addWidget(lbl_sp_arr)
-
-        sb_layout.addWidget(self.spotify_status_card)
-
-        lbl_version = QLabel("v2.4.1", self.sidebar_card)
-        lbl_version.setStyleSheet("font-size: 10px; color: #525666; margin-left: 6px; margin-top: 4px;")
-        sb_layout.addWidget(lbl_version)
+        # Bottom media connection pill
+        self.media_pill = GlassCard(radius=10, elevated=True, parent=self.sidebar_card)
+        mp_l = QHBoxLayout(self.media_pill)
+        mp_l.setContentsMargins(8, 8, 8, 8)
+        self.lbl_media_icon = QLabel(self.media_pill)
+        self.lbl_media_icon.setPixmap(get_icon("spotify", "#2ED573", 14).pixmap(14, 14))
+        self.lbl_media_status = QLabel("Auto-Detect\n• Ready", self.media_pill)
+        self.lbl_media_status.setStyleSheet("font-size: 10px; font-weight: 600; color: #8A8D9B;")
+        mp_l.addWidget(self.lbl_media_icon)
+        mp_l.addWidget(self.lbl_media_status, 1)
+        sb_layout.addWidget(self.media_pill)
 
         ws_layout.addWidget(self.sidebar_card)
 
-        # 2B. Content Pages Stack
-        self.content_stack = QStackedWidget(workspace)
-        self._build_overview_page()
-        self._build_appearance_page()
-        self._build_typography_page()
-        self._build_wallpaper_studio_page()
-        self._build_visualizer_studio_page()
-        self._build_behavior_page()
-        self._build_shortcuts_page()
-        self._build_advanced_page()
-        ws_layout.addWidget(self.content_stack, 1)
-
+        # 2B. Content Stack
+        self.stack = QStackedWidget(workspace)
+        self._build_pages()
+        ws_layout.addWidget(self.stack, 1)
         root_layout.addWidget(workspace, 1)
 
-        # 3. Sticky Bottom Action Bar
-        footer = QWidget(self)
-        footer.setFixedHeight(54)
-        f_layout = QHBoxLayout(footer)
-        f_layout.setContentsMargins(20, 8, 20, 10)
-        f_layout.setSpacing(12)
+        # 3. Bottom Transaction Bar
+        bot_bar = QWidget(self)
+        bot_bar.setFixedHeight(48)
+        bot_layout = QHBoxLayout(bot_bar)
+        bot_layout.setContentsMargins(20, 0, 20, 10)
 
-        self.btn_reset = QPushButton("Reset to Defaults", footer)
-        self.btn_reset.setIcon(get_icon("refresh", color="#8A8D9B"))
-        self.btn_reset.setFixedHeight(34)
-        self.btn_reset.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_reset.setStyleSheet("""
-            QPushButton {
-                background: rgba(24, 28, 38, 0.68);
-                color: #C5C8D4;
-                font-size: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.09);
-                border-radius: 10px;
-                padding: 0 14px;
-            }
-            QPushButton:hover {
-                background: rgba(36, 42, 58, 0.85);
-                color: #FFFFFF;
-                border-color: rgba(255, 255, 255, 0.18);
-            }
-        """)
-        self.btn_reset.clicked.connect(self._reset_to_defaults)
-        f_layout.addWidget(self.btn_reset)
+        self.lbl_unsaved = QLabel("All changes saved", bot_bar)
+        self.lbl_unsaved.setStyleSheet("color: #8A8D9B; font-size: 11px;")
+        bot_layout.addWidget(self.lbl_unsaved)
 
-        f_layout.addStretch(1)
+        btn_reset = GlassButton("Reset to Defaults", variant="secondary", icon_name="refresh", parent=bot_bar)
+        btn_reset.clicked.connect(self._reset_defaults)
+        bot_layout.addWidget(btn_reset)
 
-        self.lbl_footer_status = QLabel("Changes will be applied to Lyrune only. ⓘ", footer)
-        self.lbl_footer_status.setStyleSheet("color: #8A8D9B; font-size: 11px;")
-        f_layout.addWidget(self.lbl_footer_status)
+        bot_layout.addStretch()
 
-        f_layout.addStretch(1)
+        self.btn_cancel = GlassButton("Cancel", variant="secondary", parent=bot_bar)
+        self.btn_cancel.clicked.connect(self._cancel_changes)
+        self.btn_cancel.setEnabled(False)
+        bot_layout.addWidget(self.btn_cancel)
 
-        self.btn_cancel = QPushButton("Cancel", footer)
-        self.btn_cancel.setFixedHeight(34)
-        self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_cancel.setStyleSheet("""
-            QPushButton {
-                background: rgba(24, 28, 38, 0.68);
-                color: #C5C8D4;
-                font-size: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.09);
-                border-radius: 10px;
-                padding: 0 16px;
-            }
-            QPushButton:hover {
-                background: rgba(36, 42, 58, 0.85);
-                color: #FFFFFF;
-            }
-        """)
-        self.btn_cancel.clicked.connect(self.reject)
-        f_layout.addWidget(self.btn_cancel)
+        self.btn_apply = GlassButton("Apply Changes", variant="primary", icon_name="check", parent=bot_bar)
+        self.btn_apply.clicked.connect(self._apply_changes)
+        self.btn_apply.setEnabled(False)
+        bot_layout.addWidget(self.btn_apply)
 
-        self.btn_apply = QPushButton("Apply", footer)
-        self.btn_apply.setFixedHeight(34)
-        self.btn_apply.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_apply.setStyleSheet("""
-            QPushButton {
-                background: rgba(30, 35, 46, 0.78);
-                color: #FFFFFF;
-                font-size: 12px;
-                font-weight: 600;
-                border: 1px solid rgba(255, 255, 255, 0.14);
-                border-radius: 10px;
-                padding: 0 18px;
-            }
-            QPushButton:hover {
-                background: rgba(46, 54, 76, 0.90);
-                border-color: #2ED573;
-            }
-        """)
-        self.btn_apply.clicked.connect(self._on_apply)
-        f_layout.addWidget(self.btn_apply)
+        btn_ok = GlassButton("OK", variant="primary", parent=bot_bar)
+        btn_ok.clicked.connect(self._on_ok)
+        bot_layout.addWidget(btn_ok)
 
-        self.btn_ok = QPushButton("✓  OK", footer)
-        self.btn_ok.setFixedHeight(34)
-        self.btn_ok.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_ok.setStyleSheet("""
-            QPushButton {
-                background: #2ED573;
-                color: #080A12;
-                font-size: 12px;
-                font-weight: 700;
-                border: none;
-                border-radius: 10px;
-                padding: 0 20px;
-            }
-            QPushButton:hover {
-                background: #26AF5F;
-            }
-        """)
-        self.btn_ok.clicked.connect(self._on_ok)
-        f_layout.addWidget(self.btn_ok)
+        root_layout.addWidget(bot_bar)
+        self._switch_nav_page(0)
 
-        root_layout.addWidget(footer)
-
-        self._select_nav(0)
-
-    # === Navigation Switcher ===
-
-    def _select_nav(self, page_index: int):
-        if page_index < 0 or page_index >= self.content_stack.count():
-            return
-        self.content_stack.setCurrentIndex(page_index)
-
-        # Update button styles
-        btn_idx = 0
-        for icon_key, label, p_idx in self._nav_items_data:
-            if icon_key == "SECTION":
-                continue
-            btn = self._nav_buttons[btn_idx]
-            if p_idx == page_index:
-                btn.setIcon(get_icon(icon_key, color="#2ED573"))
+    def _switch_nav_page(self, index: int):
+        self.stack.setCurrentIndex(index)
+        for i, btn in enumerate(self.nav_buttons):
+            if i == index:
                 btn.setStyleSheet("""
                     QPushButton {
-                        background: rgba(46, 213, 115, 0.12);
-                        color: #FFFFFF;
+                        background: rgba(46, 213, 115, 0.16);
+                        color: #2ED573;
                         font-size: 12px;
                         font-weight: 700;
-                        border: 1px solid rgba(46, 213, 115, 0.40);
-                        border-radius: 10px;
+                        border: 1px solid rgba(46, 213, 115, 0.35);
+                        border-radius: 8px;
                         text-align: left;
                         padding-left: 10px;
                     }
                 """)
             else:
-                btn.setIcon(get_icon(icon_key, color="#8A8D9B"))
                 btn.setStyleSheet("""
                     QPushButton {
                         background: transparent;
                         color: #C5C8D4;
                         font-size: 12px;
-                        font-weight: 500;
+                        font-weight: 600;
                         border: none;
-                        border-radius: 10px;
+                        border-radius: 8px;
                         text-align: left;
                         padding-left: 10px;
                     }
                     QPushButton:hover {
-                        background: rgba(255, 255, 255, 0.055);
+                        background: rgba(255, 255, 255, 0.06);
                         color: #FFFFFF;
                     }
                 """)
-            btn_idx += 1
 
-    # ==============================================================================
-    # PAGE 0: OVERVIEW DASHBOARD
-    # ==============================================================================
-
-    def _build_overview_page(self):
-        self.overview_page = QWidget()
-        page_layout = QHBoxLayout(self.overview_page)
-        page_layout.setContentsMargins(0, 0, 0, 0)
-        page_layout.setSpacing(14)
-
-        # ----------------------------------------------------
-        # Left Column (Now Playing + 2x2 Bento Status Grid + Quick Actions)
-        # ----------------------------------------------------
-        left_col = QVBoxLayout()
-        left_col.setSpacing(10)
-
-        # Heading
-        lbl_heading = QLabel("Overview", self.overview_page)
-        lbl_heading.setStyleSheet("font-size: 24px; font-weight: 800; color: #FFFFFF;")
-        left_col.addWidget(lbl_heading)
-
-        lbl_subhead = QLabel("Everything looks good. Enjoy the music.", self.overview_page)
-        lbl_subhead.setStyleSheet("font-size: 12px; color: #8A8D9B; margin-bottom: 2px;")
-        left_col.addWidget(lbl_subhead)
-
-        # Hero Now Playing Bento Card
-        self.hero_card = GlassCard(radius=18, elevated=False, interactive=True, parent=self.overview_page)
-        self.hero_card.setFixedHeight(168)
-        hero_layout = QHBoxLayout(self.hero_card)
-        hero_layout.setContentsMargins(14, 14, 16, 14)
-        hero_layout.setSpacing(14)
-
-        self.lbl_hero_art = QLabel(self.hero_card)
-        self.lbl_hero_art.setFixedSize(140, 140)
-        self.lbl_hero_art.setStyleSheet("background: #141724; border-radius: 12px; border: 1px solid rgba(255,255,255,0.12);")
-        self.lbl_hero_art.setScaledContents(True)
-        hero_layout.addWidget(self.lbl_hero_art)
-
-        hero_info = QVBoxLayout()
-        hero_info.setSpacing(4)
-        hero_info.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-
-        # Source badge
-        self.lbl_hero_source = QLabel("● Playing on Spotify", self.hero_card)
-        self.lbl_hero_source.setStyleSheet("""
-            background: rgba(46, 213, 115, 0.12);
-            color: #2ED573;
-            font-size: 10px;
-            font-weight: 700;
-            border: 1px solid rgba(46, 213, 115, 0.35);
-            border-radius: 10px;
-            padding: 3px 8px;
-        """)
-        self.lbl_hero_source.setFixedHeight(20)
-        hero_info.addWidget(self.lbl_hero_source, 0, Qt.AlignmentFlag.AlignLeft)
-
-        self.lbl_hero_title = QLabel("Lyrune Studio", self.hero_card)
-        self.lbl_hero_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #FFFFFF;")
-        hero_info.addWidget(self.lbl_hero_title)
-
-        self.lbl_hero_artist = QLabel("No track playing", self.hero_card)
-        self.lbl_hero_artist.setStyleSheet("font-size: 13px; color: #C5C8D4;")
-        hero_info.addWidget(self.lbl_hero_artist)
-
-        # Live Scrubber
-        scrub_row = QHBoxLayout()
-        scrub_row.setSpacing(8)
-
-        self.lbl_scrub_cur = QLabel("1:07", self.hero_card)
-        self.lbl_scrub_cur.setStyleSheet("font-size: 10px; color: #8A8D9B;")
-        scrub_row.addWidget(self.lbl_scrub_cur)
-
-        self.hero_progress = QSlider(Qt.Orientation.Horizontal, self.hero_card)
-        self.hero_progress.setRange(0, 100)
-        self.hero_progress.setValue(32)
-        self.hero_progress.setFixedHeight(14)
-        self.hero_progress.setStyleSheet("""
-            QSlider::groove:horizontal { height: 3px; background: rgba(255,255,255,0.12); border-radius: 1.5px; }
-            QSlider::sub-page:horizontal { background: #2ED573; border-radius: 1.5px; }
-            QSlider::handle:horizontal { background: #FFFFFF; width: 10px; height: 10px; margin: -3.5px 0; border-radius: 5px; }
-        """)
-        scrub_row.addWidget(self.hero_progress, 1)
-
-        self.lbl_scrub_tot = QLabel("3:29", self.hero_card)
-        self.lbl_scrub_tot.setStyleSheet("font-size: 10px; color: #8A8D9B;")
-        scrub_row.addWidget(self.lbl_scrub_tot)
-        hero_info.addLayout(scrub_row)
-
-        # Codec / Audio Meta Chips
-        chips_row = QHBoxLayout()
-        chips_row.setSpacing(6)
-        chips = ["🎧 320 kbps", "🔊 44.1 kHz", "🔀 Stereo"]
-        for c in chips:
-            lbl_c = QLabel(c, self.hero_card)
-            lbl_c.setStyleSheet("font-size: 10px; color: #8A8D9B;")
-            chips_row.addWidget(lbl_c)
-        chips_row.addStretch(1)
-        hero_info.addLayout(chips_row)
-
-        hero_layout.addLayout(hero_info, 1)
-        left_col.addWidget(self.hero_card)
-
-        # 2x2 Bento Status Grid
-        grid_layout = QVBoxLayout()
-        grid_layout.setSpacing(10)
-
-        row1 = QHBoxLayout()
-        row1.setSpacing(10)
-        self.bento_lyrics = BentoCard("Lyrics Overlay", "Lyrics are syncing in real-time", badge_type="lyrics", active=True, parent=self.overview_page)
-        self.bento_lyrics.clicked.connect(lambda: self._select_nav(1))
-        row1.addWidget(self.bento_lyrics, 1)
-
-        self.bento_visualizer = BentoCard("Visualizer", "Audio reactive spectrum active", badge_type="visualizer", active=True, parent=self.overview_page)
-        self.bento_visualizer.clicked.connect(lambda: self._select_nav(4))
-        row1.addWidget(self.bento_visualizer, 1)
-        grid_layout.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(10)
-        self.bento_wallpaper = BentoCard("Wallpaper Engine", "Aurora landscape set as wallpaper", badge_type="wallpaper", active=True, parent=self.overview_page)
-        self.bento_wallpaper.clicked.connect(lambda: self._select_nav(3))
-        row2.addWidget(self.bento_wallpaper, 1)
-
-        self.bento_media = BentoCard("Media Source", "Spotify Desktop App connected", badge_type="spotify", active=True, parent=self.overview_page)
-        self.bento_media.clicked.connect(lambda: self._select_nav(5))
-        row2.addWidget(self.bento_media, 1)
-        grid_layout.addLayout(row2)
-
-        left_col.addLayout(grid_layout)
-
-        # Quick Actions Row
-        lbl_qa = QLabel("Quick Actions", self.overview_page)
-        lbl_qa.setStyleSheet("font-size: 12px; font-weight: 600; color: #8A8D9B; margin-top: 4px;")
-        left_col.addWidget(lbl_qa)
-
-        qa_row = QHBoxLayout()
-        qa_row.setSpacing(6)
-
-        actions = [
-            ("refresh", "Refresh Lyrics", self._refresh_lyrics_action),
-            ("visualizer", "Calibrate Audio", lambda: self._select_nav(4)),
-            ("appearance", "Edit Overlay", lambda: self._select_nav(1)),
-            ("shortcuts", "Open Logs", lambda: self._select_nav(7)),
-        ]
-        for icon_k, label, cb in actions:
-            btn = QPushButton(f" {label}", self.overview_page)
-            btn.setIcon(get_icon(icon_k, color="#8A8D9B"))
-            btn.setFixedHeight(30)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet("""
-                QPushButton {
-                    background: rgba(24, 28, 38, 0.68);
-                    color: #F0F1F5;
-                    font-size: 10px;
-                    font-weight: 500;
-                    border: 1px solid rgba(255, 255, 255, 0.09);
-                    border-radius: 8px;
-                    padding: 0 4px;
-                }
-                QPushButton:hover {
-                    background: rgba(36, 42, 58, 0.85);
-                    border-color: #2ED573;
-                    color: #2ED573;
-                }
-            """)
-            btn.clicked.connect(cb)
-            qa_row.addWidget(btn, 1)
-
-        left_col.addLayout(qa_row)
-        left_col.addStretch(1)
-        page_layout.addLayout(left_col, 5)
-
-        # ----------------------------------------------------
-        # Right Column (Studio Hub: Segmented Switch + Interactive Preview + Studio Subtabs)
-        # ----------------------------------------------------
-        self.right_studio_card = GlassCard(radius=18, elevated=False, parent=self.overview_page)
-        r_layout = QVBoxLayout(self.right_studio_card)
-        r_layout.setContentsMargins(14, 14, 14, 14)
-        r_layout.setSpacing(10)
-
-        # Top Segmented Switcher (Wallpaper Studio vs Visualizer Studio)
-        self.studio_switch = SegmentedSwitch([
-            ("wallpaper", "Wallpaper Studio"),
-            ("visualizer", "Visualizer Studio")
-        ], self.right_studio_card)
-        self.studio_switch.switched.connect(self._on_studio_switch)
-        r_layout.addWidget(self.studio_switch)
-
-        # Studio Hub Stack
-        self.overview_studio_stack = QStackedWidget(self.right_studio_card)
-
-        # === 1. Wallpaper Hub ===
-        self.wp_hub = QWidget()
-        wp_h_layout = QVBoxLayout(self.wp_hub)
-        wp_h_layout.setContentsMargins(0, 0, 0, 0)
-        wp_h_layout.setSpacing(8)
-
-        # Title & Toggle row
-        wp_header = QHBoxLayout()
-        wp_title_layout = QVBoxLayout()
-        wp_title_layout.setSpacing(1)
-
-        lbl_wp_title = QLabel("Desktop Wallpaper", self.wp_hub)
-        lbl_wp_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #FFFFFF;")
-        wp_title_layout.addWidget(lbl_wp_title)
-
-        lbl_wp_sub = QLabel("Set a dynamic wallpaper with album art, vinyl and lyrics.", self.wp_hub)
-        lbl_wp_sub.setStyleSheet("font-size: 11px; color: #8A8D9B;")
-        wp_title_layout.addWidget(lbl_wp_sub)
-        wp_header.addLayout(wp_title_layout, 1)
-
-        self.toggle_wp_enable = ToggleSwitch("", self.wp_hub)
-        self.toggle_wp_enable.setChecked(True)
-        self.toggle_wp_enable.toggled.connect(self._on_toggle_wallpaper)
-        wp_header.addWidget(self.toggle_wp_enable)
-        wp_h_layout.addLayout(wp_header)
-
-        # Live Interactive Wallpaper Canvas
-        self.wallpaper_preview = WallpaperPreviewWidget(self.wp_hub)
-        self.wallpaper_preview.setFixedHeight(170)
-        self.wallpaper_preview.vinyl_position_changed.connect(self._on_vinyl_preview_moved)
-        self.wallpaper_preview.vinyl_size_changed.connect(self._on_vinyl_preview_resized)
-        wp_h_layout.addWidget(self.wallpaper_preview)
-
-        # Sub Tabs
-        self.subtabs_wp = SubTabRow(["GENERAL", "VINYL", "ALBUM ART", "TEXT", "INTERACTION"], self.wp_hub)
-        self.subtabs_wp.tabSelected.connect(self._on_wp_subtab_selected)
-        wp_h_layout.addWidget(self.subtabs_wp)
-
-        # Subtab Control Stack
-        self.wp_subtab_stack = QStackedWidget(self.wp_hub)
-
-        # Subtab 0: GENERAL
-        wp_tab_gen = QWidget()
-        gen_l = QVBoxLayout(wp_tab_gen)
-        gen_l.setContentsMargins(0, 4, 0, 0)
-        gen_l.setSpacing(6)
-
-        self.combo_wp_playback = QComboBox(wp_tab_gen)
-        self.combo_wp_playback.addItems(["Always Play", "Pause When Hidden", "Mute Audio Only"])
-        gen_l.addLayout(self._create_studio_control_row("Playback", "How the wallpaper should behave.", self.combo_wp_playback))
-
-        self.slider_wp_volume = ValueSlider(0, 100, 38, "%", wp_tab_gen)
-        self.slider_wp_volume.valueChanged.connect(lambda v: self._set_cfg("wallpaper_volume", v))
-        gen_l.addLayout(self._create_studio_control_row("Volume", "Audio volume for the wallpaper.", self.slider_wp_volume))
-
-        self.slider_wp_bright = ValueSlider(0, 100, 72, "%", wp_tab_gen)
-        self.slider_wp_bright.valueChanged.connect(lambda v: self._set_cfg("wallpaper_brightness", v))
-        gen_l.addLayout(self._create_studio_control_row("Brightness", "Adjust wallpaper brightness.", self.slider_wp_bright))
-
-        self.slider_wp_sat = ValueSlider(0, 100, 64, "%", wp_tab_gen)
-        self.slider_wp_sat.valueChanged.connect(lambda v: self._set_cfg("wallpaper_saturation", v))
-        gen_l.addLayout(self._create_studio_control_row("Saturation", "Color intensity of the wallpaper.", self.slider_wp_sat))
-        self.wp_subtab_stack.addWidget(wp_tab_gen)
-
-        # Subtab 1: VINYL
-        wp_tab_vinyl = QWidget()
-        v_l = QVBoxLayout(wp_tab_vinyl)
-        v_l.setContentsMargins(0, 4, 0, 0)
-        v_l.setSpacing(6)
-
-        self.slider_vinyl_size = ValueSlider(5, 60, 40, "%", wp_tab_vinyl)
-        self.slider_vinyl_size.valueChanged.connect(self._on_vinyl_size_slider)
-        v_l.addLayout(self._create_studio_control_row("Vinyl Size", "Record diameter on screen.", self.slider_vinyl_size))
-
-        self.slider_vinyl_speed = ValueSlider(3, 60, 12, "s", wp_tab_vinyl)
-        self.slider_vinyl_speed.valueChanged.connect(lambda v: self._set_cfg("rotation_speed", float(v)))
-        v_l.addLayout(self._create_studio_control_row("Rotation Speed", "Seconds per full 360° turn.", self.slider_vinyl_speed))
-
-        self.slider_vinyl_op = ValueSlider(0, 100, 100, "%", wp_tab_vinyl)
-        self.slider_vinyl_op.valueChanged.connect(lambda v: self._set_cfg("vinyl_opacity", v))
-        v_l.addLayout(self._create_studio_control_row("Opacity", "Overall opacity of the vinyl record.", self.slider_vinyl_op))
-
-        self.toggle_vinyl_rot = ToggleSwitch("", wp_tab_vinyl)
-        self.toggle_vinyl_rot.setChecked(True)
-        self.toggle_vinyl_rot.toggled.connect(lambda c: self._set_cfg("rotate_while_playing", c))
-        v_l.addLayout(self._create_studio_control_row("Rotate While Playing", "Smooth 60 FPS vinyl rotation.", self.toggle_vinyl_rot))
-        self.wp_subtab_stack.addWidget(wp_tab_vinyl)
-
-        # Subtab 2: ALBUM ART
-        wp_tab_art = QWidget()
-        a_l = QVBoxLayout(wp_tab_art)
-        a_l.setContentsMargins(0, 4, 0, 0)
-        a_l.setSpacing(6)
-
-        self.slider_art_ratio = ValueSlider(20, 80, 50, "%", wp_tab_art)
-        self.slider_art_ratio.valueChanged.connect(lambda v: self._set_cfg("cover_size_ratio", v / 100.0))
-        a_l.addLayout(self._create_studio_control_row("Center Label Ratio", "Size of album art in center.", self.slider_art_ratio))
-
-        self.toggle_art_spindle = ToggleSwitch("", wp_tab_art)
-        self.toggle_art_spindle.setChecked(True)
-        self.toggle_art_spindle.toggled.connect(lambda c: self._set_cfg("show_center_spindle", c))
-        a_l.addLayout(self._create_studio_control_row("Center Spindle Dot", "Draw center turntable spindle hole.", self.toggle_art_spindle))
-        self.wp_subtab_stack.addWidget(wp_tab_art)
-
-        # Subtab 3: TEXT
-        wp_tab_text = QWidget()
-        t_l = QVBoxLayout(wp_tab_text)
-        t_l.setContentsMargins(0, 4, 0, 0)
-        t_l.setSpacing(6)
-
-        self.combo_text_pos = QComboBox(wp_tab_text)
-        self.combo_text_pos.addItems(["Right of Vinyl", "Below Vinyl", "Above Vinyl", "Hidden"])
-        self.combo_text_pos.currentIndexChanged.connect(lambda idx: self._set_cfg("text_position", ["right", "below", "above", "hidden"][idx]))
-        t_l.addLayout(self._create_studio_control_row("Text Position", "Song title & artist placement.", self.combo_text_pos))
-
-        self.swatch_text_color = ColorSwatchButton("#FFFFFF", wp_tab_text)
-        self.swatch_text_color.colorChanged.connect(lambda c: self._set_cfg("text_color", c))
-        t_l.addLayout(self._create_studio_control_row("Text Color", "Color for song metadata text.", self.swatch_text_color))
-        self.wp_subtab_stack.addWidget(wp_tab_text)
-
-        # Subtab 4: INTERACTION
-        wp_tab_int = QWidget()
-        i_l = QVBoxLayout(wp_tab_int)
-        i_l.setContentsMargins(0, 4, 0, 0)
-        i_l.setSpacing(6)
-
-        self.toggle_wp_pause_mute = ToggleSwitch("", wp_tab_int)
-        self.toggle_wp_pause_mute.setChecked(True)
-        self.toggle_wp_pause_mute.toggled.connect(lambda c: self._set_cfg("pause_on_pause", c))
-        i_l.addLayout(self._create_studio_control_row("Pause on Music Pause", "Halt rotation when playback stops.", self.toggle_wp_pause_mute))
-
-        self.toggle_wp_battery = ToggleSwitch("", wp_tab_int)
-        self.toggle_wp_battery.setChecked(True)
-        self.toggle_wp_battery.toggled.connect(lambda c: self._set_cfg("pause_on_battery", c))
-        i_l.addLayout(self._create_studio_control_row("Battery Saver", "Halt animation when on DC battery.", self.toggle_wp_battery))
-        self.wp_subtab_stack.addWidget(wp_tab_int)
-
-        wp_h_layout.addWidget(self.wp_subtab_stack)
-        self.overview_studio_stack.addWidget(self.wp_hub)
-
-        # === 2. Visualizer Hub ===
-        self.vis_hub = QWidget()
-        vis_h_layout = QVBoxLayout(self.vis_hub)
-        vis_h_layout.setContentsMargins(0, 0, 0, 0)
-        vis_h_layout.setSpacing(8)
-
-        # Header
-        vis_header = QHBoxLayout()
-        vis_title_layout = QVBoxLayout()
-        vis_title_layout.setSpacing(1)
-
-        lbl_vis_title = QLabel("Audio Visualizer", self.vis_hub)
-        lbl_vis_title.setStyleSheet("font-size: 15px; font-weight: 700; color: #FFFFFF;")
-        vis_title_layout.addWidget(lbl_vis_title)
-
-        lbl_vis_sub = QLabel("Hardware accelerated 60 FPS spectrum analyzer.", self.vis_hub)
-        lbl_vis_sub.setStyleSheet("font-size: 11px; color: #8A8D9B;")
-        vis_title_layout.addWidget(lbl_vis_sub)
-        vis_header.addLayout(vis_title_layout, 1)
-
-        self.toggle_vis_enable = ToggleSwitch("", self.vis_hub)
-        self.toggle_vis_enable.setChecked(True)
-        self.toggle_vis_enable.toggled.connect(self._on_toggle_visualizer)
-        vis_header.addWidget(self.toggle_vis_enable)
-        vis_h_layout.addLayout(vis_header)
-
-        # Live 60 FPS spectrum canvas
-        self.vis_preview = VisualizerPreviewWidget(self.vis_hub)
-        vis_h_layout.addWidget(self.vis_preview)
-
-        # Sub Tabs
-        self.subtabs_vis = SubTabRow(["STYLE", "BARS", "GRADIENT", "DYNAMICS", "OVERLAY"], self.vis_hub)
-        self.subtabs_vis.tabSelected.connect(self._on_vis_subtab_selected)
-        vis_h_layout.addWidget(self.subtabs_vis)
-
-        # Subtab Control Stack
-        self.vis_subtab_stack = QStackedWidget(self.vis_hub)
-
-        # Tab 0: STYLE
-        vis_tab_style = QWidget()
-        vt_s_l = QVBoxLayout(vis_tab_style)
-        vt_s_l.setContentsMargins(0, 4, 0, 0)
-        vt_s_l.setSpacing(6)
-
-        self.combo_vis_style = QComboBox(vis_tab_style)
-        self.combo_vis_style.addItems(["Pill Bars", "Standard Bars", "Rounded Tops"])
-        self.combo_vis_style.currentIndexChanged.connect(lambda idx: self._set_cfg("visualizer_style", ["pill", "bars", "rounded"][idx]))
-        vt_s_l.addLayout(self._create_studio_control_row("Bar Shape", "Visual styling of spectrum bars.", self.combo_vis_style))
-
-        self.slider_vis_radius = ValueSlider(0, 16, 6, "px", vis_tab_style)
-        self.slider_vis_radius.valueChanged.connect(lambda v: self._set_cfg("visualizer_bar_corner_radius", v))
-        vt_s_l.addLayout(self._create_studio_control_row("Corner Radius", "Roundness of the bar edges.", self.slider_vis_radius))
-        self.vis_subtab_stack.addWidget(vis_tab_style)
-
-        # Tab 1: BARS
-        vis_tab_bars = QWidget()
-        vt_b_l = QVBoxLayout(vis_tab_bars)
-        vt_b_l.setContentsMargins(0, 4, 0, 0)
-        vt_b_l.setSpacing(6)
-
-        self.slider_vis_width = ValueSlider(2, 24, 6, "px", vis_tab_bars)
-        self.slider_vis_width.valueChanged.connect(lambda v: self._set_cfg("visualizer_bar_width", v))
-        vt_b_l.addLayout(self._create_studio_control_row("Bar Width", "Width of each spectrum band.", self.slider_vis_width))
-
-        self.slider_vis_spacing = ValueSlider(1, 16, 3, "px", vis_tab_bars)
-        self.slider_vis_spacing.valueChanged.connect(lambda v: self._set_cfg("visualizer_bar_spacing", v))
-        vt_b_l.addLayout(self._create_studio_control_row("Bar Spacing", "Gap between adjacent bars.", self.slider_vis_spacing))
-
-        self.slider_vis_max_h = ValueSlider(20, 200, 80, "px", vis_tab_bars)
-        self.slider_vis_max_h.valueChanged.connect(lambda v: self._set_cfg("visualizer_max_bar_height", v))
-        vt_b_l.addLayout(self._create_studio_control_row("Max Height", "Maximum height of spectrum peaks.", self.slider_vis_max_h))
-        self.vis_subtab_stack.addWidget(vis_tab_bars)
-
-        # Tab 2: GRADIENT
-        vis_tab_grad = QWidget()
-        vt_g_l = QVBoxLayout(vis_tab_grad)
-        vt_g_l.setContentsMargins(0, 4, 0, 0)
-        vt_g_l.setSpacing(6)
-
-        self.grad_preview_strip = GradientPreviewBar(vis_tab_grad)
-        vt_g_l.addWidget(self.grad_preview_strip)
-
-        self.combo_grad_preset = QComboBox(vis_tab_grad)
-        self.combo_grad_preset.addItems(["Spotify Glow", "Sunset Neon", "Cyber Violet", "Electric Fire"])
-        self.combo_grad_preset.currentIndexChanged.connect(self._on_grad_preset_changed)
-        vt_g_l.addLayout(self._create_studio_control_row("Gradient Preset", "Curated color harmony.", self.combo_grad_preset))
-        self.vis_subtab_stack.addWidget(vis_tab_grad)
-
-        # Tab 3: DYNAMICS
-        vis_tab_dyn = QWidget()
-        vt_d_l = QVBoxLayout(vis_tab_dyn)
-        vt_d_l.setContentsMargins(0, 4, 0, 0)
-        vt_d_l.setSpacing(6)
-
-        self.slider_vis_sens = ValueSlider(10, 200, 100, "%", vis_tab_dyn)
-        self.slider_vis_sens.valueChanged.connect(lambda v: self._set_cfg("visualizer_sensitivity", v / 100.0))
-        vt_d_l.addLayout(self._create_studio_control_row("Sensitivity", "Audio peak responsiveness.", self.slider_vis_sens))
-
-        self.slider_vis_smooth = ValueSlider(10, 95, 65, "%", vis_tab_dyn)
-        self.slider_vis_smooth.valueChanged.connect(lambda v: self._set_cfg("visualizer_smoothing", v / 100.0))
-        vt_d_l.addLayout(self._create_studio_control_row("Smoothing", "Time-decay smoothness.", self.slider_vis_smooth))
-        self.vis_subtab_stack.addWidget(vis_tab_dyn)
-
-        # Tab 4: OVERLAY
-        vis_tab_ov = QWidget()
-        vt_o_l = QVBoxLayout(vis_tab_ov)
-        vt_o_l.setContentsMargins(0, 4, 0, 0)
-        vt_o_l.setSpacing(6)
-
-        self.combo_vis_place = QComboBox(vis_tab_ov)
-        self.combo_vis_place.addItems(["Bottom Screen", "Top Screen", "Overlay Center"])
-        self.combo_vis_place.currentIndexChanged.connect(lambda idx: self._set_cfg("visualizer_placement", ["bottom", "top", "center"][idx]))
-        vt_o_l.addLayout(self._create_studio_control_row("Placement", "Desktop screen placement.", self.combo_vis_place))
-
-        self.toggle_vis_clickthru = ToggleSwitch("", vis_tab_ov)
-        self.toggle_vis_clickthru.setChecked(True)
-        self.toggle_vis_clickthru.toggled.connect(lambda c: self._set_cfg("visualizer_click_through", c))
-        vt_o_l.addLayout(self._create_studio_control_row("Click-Through", "Clicks pass to desktop behind.", self.toggle_vis_clickthru))
-        self.vis_subtab_stack.addWidget(vis_tab_ov)
-
-        vis_h_layout.addWidget(self.vis_subtab_stack)
-        self.overview_studio_stack.addWidget(self.vis_hub)
-
-        r_layout.addWidget(self.overview_studio_stack, 1)
-        page_layout.addWidget(self.right_studio_card, 5)
-
-        self.content_stack.addWidget(self.overview_page)
-
-    def _create_studio_control_row(self, title: str, subtitle: str, widget: QWidget) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setContentsMargins(4, 2, 4, 2)
-        row.setSpacing(12)
-
-        info_l = QVBoxLayout()
-        info_l.setSpacing(1)
-        lbl_t = QLabel(title)
-        lbl_t.setStyleSheet("font-size: 12px; font-weight: 700; color: #FFFFFF;")
-        info_l.addWidget(lbl_t)
-
-        lbl_s = QLabel(subtitle)
-        lbl_s.setStyleSheet("font-size: 10px; color: #8A8D9B;")
-        info_l.addWidget(lbl_s)
-        row.addLayout(info_l, 1)
-
-        row.addWidget(widget, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        return row
-
-    def _on_studio_switch(self, index: int):
-        self.overview_studio_stack.setCurrentIndex(index)
-
-    def _on_wp_subtab_selected(self, index: int):
-        self.wp_subtab_stack.setCurrentIndex(index)
-
-    def _on_vis_subtab_selected(self, index: int):
-        self.vis_subtab_stack.setCurrentIndex(index)
-
-    # ==============================================================================
-    # PAGE 1: APPEARANCE
-    # ==============================================================================
-
-    def _build_appearance_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
-
-        lbl_title = QLabel("Appearance", page)
-        lbl_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #FFFFFF;")
-        layout.addWidget(lbl_title)
-
-        card = GlassCard(radius=16, parent=page)
-        c_layout = QVBoxLayout(card)
-        c_layout.setContentsMargins(16, 16, 16, 16)
-        c_layout.setSpacing(12)
-
-        self.swatch_text_c = ColorSwatchButton("#FFFFFF", card)
-        self.swatch_text_c.colorChanged.connect(lambda c: self._set_cfg("text_color", c))
-        c_layout.addLayout(self._create_studio_control_row("Text Color", "Default text color for lyrics.", self.swatch_text_c))
-
-        self.swatch_active_c = ColorSwatchButton("#2ED573", card)
-        self.swatch_active_c.colorChanged.connect(lambda c: self._set_cfg("active_color", c))
-        c_layout.addLayout(self._create_studio_control_row("Active Highlight", "Color of the currently singing lyric line.", self.swatch_active_c))
-
-        self.swatch_progress_c = ColorSwatchButton("#1DB954", card)
-        self.swatch_progress_c.colorChanged.connect(lambda c: self._set_cfg("progress_fill_color", c))
-        c_layout.addLayout(self._create_studio_control_row("Progress Fill", "Fill color for word-level karaoke sync.", self.swatch_progress_c))
-
-        self.slider_bg_opacity = ValueSlider(0, 100, 30, "%", card)
-        self.slider_bg_opacity.valueChanged.connect(lambda v: self._set_cfg("background_opacity", v))
-        c_layout.addLayout(self._create_studio_control_row("Background Opacity", "Translucency of lyrics overlay card.", self.slider_bg_opacity))
-
-        self.slider_blur = ValueSlider(0, 48, 20, "px", card)
-        self.slider_blur.valueChanged.connect(lambda v: self._set_cfg("blur_radius", v))
-        c_layout.addLayout(self._create_studio_control_row("Backdrop Blur", "Gaussian glass blur intensity.", self.slider_blur))
-
-        layout.addWidget(card)
-        layout.addStretch(1)
-        self.content_stack.addWidget(page)
-
-    # ==============================================================================
-    # PAGE 2: TYPOGRAPHY
-    # ==============================================================================
-
-    def _build_typography_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
-
-        lbl_title = QLabel("Typography", page)
-        lbl_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #FFFFFF;")
-        layout.addWidget(lbl_title)
-
-        card = GlassCard(radius=16, parent=page)
-        c_layout = QVBoxLayout(card)
-        c_layout.setContentsMargins(16, 16, 16, 16)
-        c_layout.setSpacing(12)
-
-        self.font_combo = QFontComboBox(card)
-        self.font_combo.currentFontChanged.connect(lambda f: self._set_cfg("font_family", f.family()))
-        c_layout.addLayout(self._create_studio_control_row("Font Family", "Primary font for lyrics display.", self.font_combo))
-
-        self.slider_font_size = ValueSlider(12, 64, 28, "pt", card)
-        self.slider_font_size.valueChanged.connect(lambda v: self._set_cfg("font_size", v))
-        c_layout.addLayout(self._create_studio_control_row("Font Size", "Base font size for active line.", self.slider_font_size))
-
-        self.slider_active_scale = ValueSlider(100, 160, 115, "%", card)
-        self.slider_active_scale.valueChanged.connect(lambda v: self._set_cfg("active_line_scale", v / 100.0))
-        c_layout.addLayout(self._create_studio_control_row("Active Line Scale", "Enlargement ratio for current line.", self.slider_active_scale))
-
-        self.combo_align = QComboBox(card)
-        self.combo_align.addItems(["Left", "Center", "Right"])
-        self.combo_align.currentIndexChanged.connect(lambda idx: self._set_cfg("text_alignment", ["Left", "Center", "Right"][idx]))
-        c_layout.addLayout(self._create_studio_control_row("Text Alignment", "Horizontal alignment of lyrics.", self.combo_align))
-
-        layout.addWidget(card)
-        layout.addStretch(1)
-        self.content_stack.addWidget(page)
-
-    # ==============================================================================
-    # PAGE 3: FULL DEDICATED WALLPAPER STUDIO
-    # ==============================================================================
-
-    def _build_wallpaper_studio_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
-
-        lbl_title = QLabel("Wallpaper Studio", page)
-        lbl_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #FFFFFF;")
-        layout.addWidget(lbl_title)
-
-        # Large Full-Width Interactive Canvas
-        self.full_wp_preview = WallpaperPreviewWidget(page)
-        self.full_wp_preview.setFixedHeight(220)
-        self.full_wp_preview.vinyl_position_changed.connect(self._on_vinyl_preview_moved)
-        self.full_wp_preview.vinyl_size_changed.connect(self._on_vinyl_preview_resized)
-        layout.addWidget(self.full_wp_preview)
-
-        # Full Controls Glass Card
-        card = GlassCard(radius=16, parent=page)
-        c_layout = QVBoxLayout(card)
-        c_layout.setContentsMargins(16, 14, 16, 14)
-        c_layout.setSpacing(10)
-
-        # Wallpaper Source File Row
-        src_row = QHBoxLayout()
-        self.txt_wp_path = QLineEdit(card)
-        self.txt_wp_path.setPlaceholderText("Select video (.mp4, .webm) or image (.png, .jpg)...")
-        src_row.addWidget(self.txt_wp_path, 1)
-
-        btn_browse = QPushButton("Browse...", card)
-        btn_browse.setFixedHeight(30)
-        btn_browse.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_browse.setStyleSheet("""
-            QPushButton { background: rgba(30,35,46,0.78); color: #FFFFFF; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 0 12px; }
-            QPushButton:hover { background: rgba(46,54,76,0.90); border-color: #2ED573; }
-        """)
-        btn_browse.clicked.connect(self._browse_wallpaper)
-        src_row.addWidget(btn_browse)
-        c_layout.addLayout(self._create_studio_control_row("Wallpaper Source", "Image or video file path.", QWidget()))
-        c_layout.addLayout(src_row)
-
-        self.combo_wp_monitor = QComboBox(card)
-        for opt in get_wallpaper_display_options():
-            self.combo_wp_monitor.addItem(str(opt))
-        self.combo_wp_monitor.currentTextChanged.connect(lambda txt: self._set_cfg("wallpaper_display_mode", txt))
-        c_layout.addLayout(self._create_studio_control_row("Target Display", "Monitor where wallpaper is rendered.", self.combo_wp_monitor))
-
-        self.combo_wp_scale = QComboBox(card)
-        self.combo_wp_scale.addItems(["Fill (Crop to Aspect)", "Fit (Letterbox)", "Stretch (Full Screen)", "Center"])
-        self.combo_wp_scale.currentIndexChanged.connect(lambda idx: self._set_cfg("scaling_mode", ["fill", "fit", "stretch", "center"][idx]))
-        c_layout.addLayout(self._create_studio_control_row("Scaling Mode", "Aspect ratio handling mode.", self.combo_wp_scale))
-
-        layout.addWidget(card)
-        layout.addStretch(1)
-        self.content_stack.addWidget(page)
-
-    # ==============================================================================
-    # PAGE 4: FULL DEDICATED VISUALIZER STUDIO
-    # ==============================================================================
-
-    def _build_visualizer_studio_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
-
-        lbl_title = QLabel("Visualizer Studio", page)
-        lbl_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #FFFFFF;")
-        layout.addWidget(lbl_title)
-
-        # Large Visualizer Spectrum Canvas
-        self.full_vis_preview = VisualizerPreviewWidget(page)
-        self.full_vis_preview.setFixedHeight(180)
-        layout.addWidget(self.full_vis_preview)
-
-        # Full Controls Glass Card
-        card = GlassCard(radius=16, parent=page)
-        c_layout = QVBoxLayout(card)
-        c_layout.setContentsMargins(16, 14, 16, 14)
-        c_layout.setSpacing(10)
-
-        self.combo_vis_orient = QComboBox(card)
-        self.combo_vis_orient.addItems(["Bottom (Upward)", "Top (Downward)", "Center (Dual-Sided)"])
-        self.combo_vis_orient.currentIndexChanged.connect(lambda idx: self._set_cfg("visualizer_orientation", ["BOTTOM", "TOP", "CENTER"][idx]))
-        c_layout.addLayout(self._create_studio_control_row("Orientation", "Direction spectrum bars grow.", self.combo_vis_orient))
-
-        self.slider_vis_bars = ValueSlider(16, 128, 64, " bars", card)
-        self.slider_vis_bars.valueChanged.connect(lambda v: self._set_cfg("visualizer_bar_count", v))
-        c_layout.addLayout(self._create_studio_control_row("Bar Count", "Total frequency bins to render.", self.slider_vis_bars))
-
-        self.toggle_vis_game = ToggleSwitch("", card)
-        self.toggle_vis_game.setChecked(True)
-        self.toggle_vis_game.toggled.connect(lambda c: self._set_cfg("visualizer_exclude_from_capture", c))
-        c_layout.addLayout(self._create_studio_control_row("Capture Exclusion", "Hide visualizer from OBS / Discord stream.", self.toggle_vis_game))
-
-        layout.addWidget(card)
-        layout.addStretch(1)
-        self.content_stack.addWidget(page)
-
-    # ==============================================================================
-    # PAGE 5: BEHAVIOR
-    # ==============================================================================
-
-    def _build_behavior_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
-
-        lbl_title = QLabel("Behavior", page)
-        lbl_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #FFFFFF;")
-        layout.addWidget(lbl_title)
-
-        card = GlassCard(radius=16, parent=page)
-        c_layout = QVBoxLayout(card)
-        c_layout.setContentsMargins(16, 16, 16, 16)
-        c_layout.setSpacing(12)
-
-        self.combo_media_src = QComboBox(card)
-        self.combo_media_src.addItems(["Auto Detect (Spotify / Windows Media)", "Spotify Desktop App Only", "Windows Media API Only"])
-        self.combo_media_src.currentIndexChanged.connect(lambda idx: self._set_cfg("preferred_media_source", ["auto", "spotify", "windows_media"][idx]))
-        c_layout.addLayout(self._create_studio_control_row("Media Source", "Active music source query engine.", self.combo_media_src))
-
-        self.toggle_click_thru = ToggleSwitch("", card)
-        self.toggle_click_thru.setChecked(False)
-        self.toggle_click_thru.toggled.connect(lambda c: self._set_cfg("click_through", c))
-        c_layout.addLayout(self._create_studio_control_row("Click-Through Overlay", "Pass mouse clicks to apps beneath lyrics.", self.toggle_click_thru))
-
-        self.toggle_auto_hide = ToggleSwitch("", card)
-        self.toggle_auto_hide.setChecked(True)
-        self.toggle_auto_hide.toggled.connect(lambda c: self._set_cfg("auto_hide_on_pause", c))
-        c_layout.addLayout(self._create_studio_control_row("Auto-Hide on Pause", "Hide lyrics overlay when playback pauses.", self.toggle_auto_hide))
-
-        self.toggle_start_boot = ToggleSwitch("", card)
-        self.toggle_start_boot.setChecked(False)
-        self.toggle_start_boot.toggled.connect(lambda c: self._set_cfg("start_with_windows", c))
-        c_layout.addLayout(self._create_studio_control_row("Start with Windows", "Launch Lyrune on system startup.", self.toggle_start_boot))
-
-        layout.addWidget(card)
-        layout.addStretch(1)
-        self.content_stack.addWidget(page)
-
-    # ==============================================================================
-    # PAGE 6: SHORTCUTS
-    # ==============================================================================
-
-    def _build_shortcuts_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
-
-        lbl_title = QLabel("Keyboard Shortcuts", page)
-        lbl_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #FFFFFF;")
-        layout.addWidget(lbl_title)
-
-        card = GlassCard(radius=16, parent=page)
-        c_layout = QVBoxLayout(card)
-        c_layout.setContentsMargins(16, 16, 16, 16)
-        c_layout.setSpacing(12)
-
-        shortcuts = [
-            ("Toggle Lyrics Overlay", "Show or hide the desktop lyrics overlay.", "Ctrl+H"),
-            ("Open Settings Studio", "Open the Lyrune settings studio dialog.", "Ctrl+,"),
-            ("Refresh Lyrics", "Force re-fetch lyrics from LRCLib API.", "Ctrl+R"),
-            ("Toggle Wallpaper", "Enable or disable desktop live wallpaper.", "Ctrl+W"),
-            ("Toggle Visualizer", "Enable or disable audio reactive visualizer.", "Ctrl+V"),
-        ]
-        for name, desc, key in shortcuts:
-            keycap = KeycapWidget(key, card)
-            c_layout.addLayout(self._create_studio_control_row(name, desc, keycap))
-
-        layout.addWidget(card)
-        layout.addStretch(1)
-        self.content_stack.addWidget(page)
-
-    # ==============================================================================
-    # PAGE 7: ADVANCED & LOGS
-    # ==============================================================================
-
-    def _build_advanced_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(12)
-
-        lbl_title = QLabel("Advanced & Diagnostics", page)
-        lbl_title.setStyleSheet("font-size: 22px; font-weight: 800; color: #FFFFFF;")
-        layout.addWidget(lbl_title)
-
-        card = GlassCard(radius=16, parent=page)
-        c_layout = QVBoxLayout(card)
-        c_layout.setContentsMargins(16, 14, 16, 14)
-        c_layout.setSpacing(10)
-
-        # Clear Cache Button
-        btn_cache = QPushButton("Clear Cache", card)
-        btn_cache.setFixedHeight(30)
-        btn_cache.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_cache.setStyleSheet("""
-            QPushButton { background: rgba(30,35,46,0.78); color: #FFFFFF; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 0 12px; }
-            QPushButton:hover { background: rgba(255,71,87,0.35); border-color: #FF4757; color: #FF4757; }
-        """)
-        btn_cache.clicked.connect(self._clear_cache_action)
-        c_layout.addLayout(self._create_studio_control_row("Clear Lyrics & Art Cache", "Free cached lyrics and artwork files on disk.", btn_cache))
-
-        # Live Logs Console
-        lbl_log = QLabel("System Log History", card)
-        lbl_log.setStyleSheet("font-size: 12px; font-weight: 700; color: #FFFFFF; margin-top: 6px;")
-        c_layout.addWidget(lbl_log)
-
-        self.txt_logs = QTextEdit(card)
-        self.txt_logs.setReadOnly(True)
-        self.txt_logs.setFixedHeight(180)
-        self.txt_logs.setStyleSheet("""
-            QTextEdit {
-                background: #0D101A;
-                color: #A0A5B8;
-                font-family: 'Consolas', 'Cascadia Code', monospace;
-                font-size: 11px;
-                border: 1px solid rgba(255,255,255,0.10);
-                border-radius: 8px;
-                padding: 6px;
-            }
-        """)
-        c_layout.addWidget(self.txt_logs)
-
-        layout.addWidget(card)
-        layout.addStretch(1)
-        self.content_stack.addWidget(page)
-
-    # === Live Media Sync & Dynamic Island Integration ===
-
-    def _sync_media_loop(self):
-        if not self.player:
+    def _switch_page(self, page_identifier):
+        """Switches page by index or string name (e.g. 'home', 'wallpaper', 'visualizer')."""
+        if isinstance(page_identifier, int):
+            self._switch_nav_page(page_identifier)
             return
-        try:
-            info = None
-            if hasattr(self.player, "get_playback_info"):
-                info = self.player.get_playback_info()
-            elif hasattr(self.player, "get_current_track_info"):
-                info = self.player.get_current_track_info()
 
-            if not info:
-                return
-
-            title = info.get("title", "")
-            artist = info.get("artist", "")
-            is_playing = info.get("is_playing", True)
-            position = info.get("position", 0.0)
-            duration = info.get("duration", 0.0)
-            art_pixmap = info.get("album_art", None)
-
-            if title and title != self.lbl_hero_title.text():
-                self.lbl_hero_title.setText(title)
-                self.lbl_hero_artist.setText(artist or "Unknown Artist")
-                self._ambient_accent = extract_dominant_accent(art_pixmap)
-
-                if art_pixmap and not art_pixmap.isNull():
-                    self._current_pixmap = art_pixmap
-                    self.lbl_hero_art.setPixmap(art_pixmap)
-
-                self.title_bar.dynamic_island.update_media(title, artist, art_pixmap, is_playing)
-
-                # Update wallpaper preview
-                media_snap = MediaSnapshot(
-                    track_id=f"{artist} - {title}",
-                    title=title,
-                    artist=artist,
-                    album_art=art_pixmap,
-                    is_playing=is_playing,
-                    position=position,
-                    duration=duration
-                )
-                self.wallpaper_preview.set_media(media_snap)
-                self.full_wp_preview.set_media(media_snap)
-                self.update()
-
-            # Scrubber update
-            if duration > 0:
-                pct = int((position / duration) * 100)
-                self.hero_progress.setValue(max(0, min(100, pct)))
-                cur_m, cur_s = divmod(int(position), 60)
-                tot_m, tot_s = divmod(int(duration), 60)
-                self.lbl_scrub_cur.setText(f"{cur_m}:{cur_s:02d}")
-                self.lbl_scrub_tot.setText(f"{tot_m}:{tot_s:02d}")
-
-        except Exception as e:
-            pass
-
-    def _transport_play_pause(self):
-        if self.player and hasattr(self.player, "play_pause"):
-            self.player.play_pause()
-
-    def _transport_prev(self):
-        if self.player and hasattr(self.player, "previous_track"):
-            self.player.previous_track()
-
-    def _transport_next(self):
-        if self.player and hasattr(self.player, "next_track"):
-            self.player.next_track()
-
-    # === Interaction Callbacks ===
-
-    def _on_toggle_wallpaper(self, checked: bool):
-        self._set_cfg("enable_wallpaper", checked)
-        self.bento_wallpaper.set_status(checked, "Aurora landscape set as wallpaper" if checked else "Wallpaper engine disabled")
-
-    def _on_toggle_visualizer(self, checked: bool):
-        self._set_cfg("visualizer_enabled", checked)
-        self.bento_visualizer.set_status(checked, "Audio reactive spectrum active" if checked else "Visualizer disabled")
-
-    def _on_vinyl_preview_moved(self, norm_x: float, norm_y: float):
-        self._set_cfg("vinyl_x", norm_x)
-        self._set_cfg("vinyl_y", norm_y)
-        self.full_wp_preview.update_vinyl_position(norm_x, norm_y)
-
-    def _on_vinyl_preview_resized(self, norm_size: float):
-        self._set_cfg("vinyl_size", norm_size)
-        self.slider_vinyl_size.setValue(int(norm_size * 100))
-        self.full_wp_preview.update_vinyl_size(norm_size)
-
-    def _on_vinyl_size_slider(self, val: int):
-        norm = val / 100.0
-        self._set_cfg("vinyl_size", norm)
-        self.wallpaper_preview.update_vinyl_size(norm)
-        self.full_wp_preview.update_vinyl_size(norm)
-
-    def _on_grad_preset_changed(self, idx: int):
-        presets = [
-            [{"position": 0.0, "color": "#2ED573", "opacity": 0.9}, {"position": 1.0, "color": "#1DB954", "opacity": 0.4}],
-            [{"position": 0.0, "color": "#FF4757", "opacity": 0.9}, {"position": 1.0, "color": "#FFA502", "opacity": 0.4}],
-            [{"position": 0.0, "color": "#9B51E0", "opacity": 0.9}, {"position": 1.0, "color": "#00D2D3", "opacity": 0.4}],
-            [{"position": 0.0, "color": "#FF6B81", "opacity": 0.9}, {"position": 1.0, "color": "#FF4757", "opacity": 0.4}],
-        ]
-        if 0 <= idx < len(presets):
-            self.grad_preview_strip.set_stops(presets[idx])
-            self._set_cfg("visualizer_gradient_stops", presets[idx])
-
-    def _browse_wallpaper(self):
-        fpath, _ = QFileDialog.getOpenFileName(
-            self, "Select Wallpaper Source", "",
-            "Media Files (*.mp4 *.webm *.png *.jpg *.jpeg *.bmp);;All Files (*.*)"
-        )
-        if fpath:
-            self.txt_wp_path.setText(fpath)
-            self._set_cfg("wallpaper_path", fpath)
-            self.wallpaper_preview.set_background(fpath, self.working_settings.get("scaling_mode", "fill"))
-            self.full_wp_preview.set_background(fpath, self.working_settings.get("scaling_mode", "fill"))
-
-    def _refresh_lyrics_action(self):
-        if self.player and hasattr(self.player, "force_refresh_lyrics"):
-            self.player.force_refresh_lyrics()
-        self.lbl_footer_status.setText("Lyrics refresh requested.")
-
-    def _clear_cache_action(self):
-        try:
-            cache_dir = os.path.join(os.path.dirname(__file__), ".lyrics_cache")
-            if os.path.exists(cache_dir):
-                for f in os.listdir(cache_dir):
-                    p = os.path.join(cache_dir, f)
-                    if os.path.isfile(p):
-                        os.remove(p)
-            self.lbl_footer_status.setText("Cache cleared successfully.")
-        except Exception as e:
-            self.lbl_footer_status.setText(f"Error clearing cache: {e}")
-
-    def _append_log_entry(self, msg: str):
-        if hasattr(self, "txt_logs"):
-            self.txt_logs.append(msg)
-
-    def _load_log_history(self):
-        try:
-            history = AppLogger.instance().get_history()
-            if hasattr(self, "txt_logs"):
-                self.txt_logs.setPlainText("\n".join(history))
-        except Exception:
-            pass
-
-    def _reset_to_defaults(self):
-        self.working_settings = dict(self.settings_manager.default_settings)
-        self._load_current_values()
-        self.lbl_footer_status.setText("Settings reset to defaults.")
-
-    def _set_cfg(self, key: str, value: Any):
-        if self._is_initializing:
-            return
-        self.working_settings[key] = value
-        self._update_preview()
-
-    def _update_preview(self):
-        if hasattr(self, "vis_preview"):
-            self.vis_preview.update_style(self.working_settings)
-        if hasattr(self, "full_vis_preview"):
-            self.full_vis_preview.update_style(self.working_settings)
-
-    def _load_current_values(self):
-        # Apply working_settings to all widgets
-        cfg = self.working_settings
-        wp_cfg = WallpaperConfig(
-            enabled=cfg.get("enable_wallpaper", True),
-            wallpaper_path=cfg.get("wallpaper_path", ""),
-            scaling_mode=cfg.get("scaling_mode", "fill"),
-            vinyl_x=cfg.get("vinyl_x", 0.88),
-            vinyl_y=cfg.get("vinyl_y", 0.50),
-            vinyl_size=cfg.get("vinyl_size", 0.44),
-            vinyl_opacity=cfg.get("vinyl_opacity", 100),
-            rotation_speed=cfg.get("rotation_speed", 12.0),
-            rotate_while_playing=cfg.get("rotate_while_playing", True)
-        )
-        self.wallpaper_preview.set_config(wp_cfg)
-        self.full_wp_preview.set_config(wp_cfg)
-
-        if wp_cfg.wallpaper_path:
-            self.wallpaper_preview.set_background(wp_cfg.wallpaper_path, wp_cfg.scaling_mode)
-            self.full_wp_preview.set_background(wp_cfg.wallpaper_path, wp_cfg.scaling_mode)
-
-    def _on_apply(self):
-        self.settings_manager.update(self.working_settings)
-        self.settings_manager.save()
-        self.settings_changed.emit(self.working_settings)
-        self.lbl_footer_status.setText("Settings applied.")
-
-    def _on_ok(self):
-        self._on_apply()
-        self.accept()
+        page_name = str(page_identifier).strip().lower()
+        mapping = {
+            "home": 0, "overview": 0,
+            "media": 1, "sources": 1,
+            "lyrics": 2,
+            "wallpaper": 3,
+            "visualizer": 4,
+            "appearance": 5, "theme": 5,
+            "behavior": 6,
+            "shortcuts": 7, "hotkeys": 7,
+            "performance": 8,
+            "diagnostics": 9, "logs": 9,
+            "advanced": 10, "profiles": 10, "caches": 10
+        }
+        idx = mapping.get(page_name, 0)
+        self._switch_nav_page(idx)
 
     def _refresh_media_sources(self):
-        pass
+        """Scans active media sessions and updates the UI sources list."""
+        self._scan_media_sessions()
+
+    # === Pages Implementation ===
+
+    def _build_pages(self):
+        # 0: HOME
+        self.stack.addWidget(self._build_page_home())
+        # 1: MEDIA
+        self.stack.addWidget(self._build_page_media())
+        # 2: LYRICS
+        self.stack.addWidget(self._build_page_lyrics())
+        # 3: WALLPAPER
+        self.stack.addWidget(self._build_page_wallpaper())
+        # 4: VISUALIZER
+        self.stack.addWidget(self._build_page_visualizer())
+        # 5: APPEARANCE
+        self.stack.addWidget(self._build_page_appearance())
+        # 6: BEHAVIOR
+        self.stack.addWidget(self._build_page_behavior())
+        # 7: SHORTCUTS
+        self.stack.addWidget(self._build_page_shortcuts())
+        # 8: PERFORMANCE
+        self.stack.addWidget(self._build_page_performance())
+        # 9: DIAGNOSTICS
+        self.stack.addWidget(self._build_page_diagnostics())
+        # 10: ADVANCED
+        self.stack.addWidget(self._build_page_advanced())
+
+    # --- 0: HOME ---
+    def _build_page_home(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        # Header Now Playing Banner
+        now_card = GlassCard(radius=16, elevated=True, parent=page)
+        nc_layout = QHBoxLayout(now_card)
+        nc_layout.setContentsMargins(16, 14, 16, 14)
+
+        self.home_art_lbl = QLabel(now_card)
+        self.home_art_lbl.setFixedSize(68, 68)
+        self.home_art_lbl.setStyleSheet("background: rgba(0,0,0,0.3); border-radius: 10px;")
+        nc_layout.addWidget(self.home_art_lbl)
+
+        info_v = QVBoxLayout()
+        self.home_title_lbl = QLabel("No Track Playing", now_card)
+        self.home_title_lbl.setStyleSheet("font-size: 16px; font-weight: 700; color: #FFFFFF;")
+        self.home_artist_lbl = QLabel("Waiting for media session...", now_card)
+        self.home_artist_lbl.setStyleSheet("font-size: 12px; color: #8A8D9B;")
+        self.home_meta_lbl = QLabel("Auto-Detect  •  Ready", now_card)
+        self.home_meta_lbl.setStyleSheet("font-size: 11px; font-weight: 600; color: #2ED573;")
+
+        info_v.addWidget(self.home_title_lbl)
+        info_v.addWidget(self.home_artist_lbl)
+        info_v.addWidget(self.home_meta_lbl)
+        nc_layout.addLayout(info_v, 1)
+
+        layout.addWidget(now_card)
+
+        # Bento Status Grid (Clickable)
+        grid_card = GlassCard(radius=16, elevated=False, parent=page)
+        gc_l = QVBoxLayout(grid_card)
+        gc_l.setContentsMargins(14, 12, 14, 12)
+        gc_l.setSpacing(10)
+
+        lbl_grid_t = QLabel("Subsystems Status (Click to configure)", grid_card)
+        lbl_grid_t.setStyleSheet("font-size: 12px; font-weight: 700; color: #8A8D9B;")
+        gc_l.addWidget(lbl_grid_t)
+
+        h1 = QHBoxLayout()
+        self.bento_lyrics = BentoStatusCard("Lyrics Overlay", "Active", "Lyrics syncing in real time", "A", "#2ED573", grid_card)
+        self.bento_lyrics.mousePressEvent = lambda _: self._switch_nav_page(2)
+        self.bento_vis = BentoStatusCard("Visualizer", "Standby", "Audio reactive spectrum", "V", "#38BDF8", grid_card)
+        self.bento_vis.mousePressEvent = lambda _: self._switch_nav_page(4)
+        h1.addWidget(self.bento_lyrics)
+        h1.addWidget(self.bento_vis)
+        gc_l.addLayout(h1)
+
+        h2 = QHBoxLayout()
+        self.bento_wp = BentoStatusCard("Wallpaper Engine", "Standby", "Dynamic vinyl on WorkerW", "W", "#9B51E0", grid_card)
+        self.bento_wp.mousePressEvent = lambda _: self._switch_nav_page(3)
+        self.bento_media = BentoStatusCard("Media Source", "Active", "GSMTC Media Interop", "M", "#1DB954", grid_card)
+        self.bento_media.mousePressEvent = lambda _: self._switch_nav_page(1)
+        h2.addWidget(self.bento_wp)
+        h2.addWidget(self.bento_media)
+        gc_l.addLayout(h2)
+
+        layout.addWidget(grid_card)
+
+        # Quick Action Buttons
+        qa_card = GlassCard(radius=14, elevated=False, parent=page)
+        qa_l = QHBoxLayout(qa_card)
+        qa_l.setContentsMargins(12, 10, 12, 10)
+
+        btn_qa_ref = GlassButton("Refresh Lyrics", icon_name="refresh", parent=qa_card)
+        btn_qa_ref.clicked.connect(self._quick_refresh_lyrics)
+        btn_qa_find = GlassButton("Find Lyrics", icon_name="search", parent=qa_card)
+        btn_qa_find.clicked.connect(self._open_manual_search)
+        btn_qa_logs = GlassButton("Open Logs", icon_name="terminal", parent=qa_card)
+        btn_qa_logs.clicked.connect(lambda: self._switch_nav_page(9))
+
+        qa_l.addWidget(btn_qa_ref)
+        qa_l.addWidget(btn_qa_find)
+        qa_l.addWidget(btn_qa_logs)
+        qa_l.addStretch()
+
+        layout.addWidget(qa_card)
+        layout.addStretch()
+        return page
+
+    # --- 1: MEDIA ---
+    def _build_page_media(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        card = GlassCard(radius=16, elevated=False, parent=page)
+        c_l = QVBoxLayout(card)
+        c_l.setContentsMargins(16, 14, 16, 14)
+        c_l.setSpacing(12)
+
+        lbl_h = QLabel("Media Sources & Priority", card)
+        lbl_h.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        c_l.addWidget(lbl_h)
+
+        # Preferred source
+        s_form = QFormLayout()
+        self.cmb_media_src = QComboBox(card)
+        self.cmb_media_src.addItems(["Auto-Detect", "Spotify Desktop", "Spotify Web", "YouTube Music", "Brave", "Chrome", "Edge", "Firefox", "Opera"])
+        self.cmb_media_src.currentTextChanged.connect(self._on_media_src_changed)
+        s_form.addRow("Target Media Source:", self.cmb_media_src)
+
+        self.sw_prefer_playing = ToggleSwitch("Prefer Currently Playing Session", parent=card)
+        self.sw_prefer_playing.toggled.connect(lambda v: self._set_setting("prefer_playing_session", v))
+        c_l.addLayout(s_form)
+        c_l.addWidget(self.sw_prefer_playing)
+
+        # Priority List
+        lbl_prio = QLabel("Auto-Detect Source Priority Ranking (Top = Highest Priority):", card)
+        lbl_prio.setStyleSheet("font-size: 12px; font-weight: 600; color: #8A8D9B; margin-top: 8px;")
+        c_l.addWidget(lbl_prio)
+
+        self.list_priority = QListWidget(card)
+        self.list_priority.setFixedHeight(140)
+        self.list_priority.setStyleSheet("""
+            QListWidget {
+                background: rgba(24, 28, 38, 0.65);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                padding: 4px;
+                color: #FFFFFF;
+            }
+            QListWidget::item {
+                padding: 6px 10px;
+                border-radius: 6px;
+            }
+            QListWidget::item:selected {
+                background: rgba(46, 213, 115, 0.22);
+                color: #2ED573;
+            }
+        """)
+        for item in self.working_settings.get("source_priority", []):
+            self.list_priority.addItem(item)
+        c_l.addWidget(self.list_priority)
+
+        # Reorder buttons
+        btn_h = QHBoxLayout()
+        btn_up = GlassButton("Move Up", icon_name="chevron_up", parent=card)
+        btn_up.clicked.connect(self._priority_move_up)
+        btn_down = GlassButton("Move Down", icon_name="chevron_down", parent=card)
+        btn_down.clicked.connect(self._priority_move_down)
+        btn_scan = GlassButton("Scan Active Sessions", icon_name="refresh", parent=card)
+        btn_scan.clicked.connect(self._scan_media_sessions)
+
+        btn_h.addWidget(btn_up)
+        btn_h.addWidget(btn_down)
+        btn_h.addStretch()
+        btn_h.addWidget(btn_scan)
+        c_l.addLayout(btn_h)
+
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    # --- 2: LYRICS ---
+    def _build_page_lyrics(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        card = GlassCard(radius=16, elevated=False, parent=page)
+        c_l = QVBoxLayout(card)
+        c_l.setContentsMargins(16, 14, 16, 14)
+        c_l.setSpacing(10)
+
+        lbl_h = QLabel("Lyrics Synchronization & Matching", card)
+        lbl_h.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        c_l.addWidget(lbl_h)
+
+        # Match confidence & search modal trigger
+        match_h = QHBoxLayout()
+        self.lbl_match_score = QLabel("LRCLIB Match Confidence: 94% (HIGH)", card)
+        self.lbl_match_score.setStyleSheet("font-size: 12px; font-weight: 700; color: #2ED573;")
+        btn_manual_search = GlassButton("Find / Correct Lyrics...", icon_name="search", parent=card)
+        btn_manual_search.clicked.connect(self._open_manual_search)
+
+        match_h.addWidget(self.lbl_match_score)
+        match_h.addStretch()
+        match_h.addWidget(btn_manual_search)
+        c_l.addLayout(match_h)
+
+        # Sync offset sliders
+        lbl_sync = QLabel("Global Timing Offset (milliseconds):", card)
+        lbl_sync.setStyleSheet("font-size: 11px; font-weight: 600; color: #8A8D9B; margin-top: 6px;")
+        c_l.addWidget(lbl_sync)
+
+        self.sld_sync = ValueSlider(-5000, 5000, 0, "ms", parent=card)
+        self.sld_sync.valueChanged.connect(lambda v: self._set_setting("sync_offset_ms", v))
+        c_l.addWidget(self.sld_sync)
+
+        # Quick nudge buttons
+        nudge_h = QHBoxLayout()
+        btn_nudge_m = GlassButton("-250ms (Earlier)", parent=card)
+        btn_nudge_m.clicked.connect(lambda: self.sld_sync.setValue(self.sld_sync.value() - 250))
+        btn_nudge_p = GlassButton("+250ms (Later)", parent=card)
+        btn_nudge_p.clicked.connect(lambda: self.sld_sync.setValue(self.sld_sync.value() + 250))
+        btn_nudge_zero = GlassButton("Reset 0ms", parent=card)
+        btn_nudge_zero.clicked.connect(lambda: self.sld_sync.setValue(0))
+
+        nudge_h.addWidget(btn_nudge_m)
+        nudge_h.addWidget(btn_nudge_p)
+        nudge_h.addWidget(btn_nudge_zero)
+        nudge_h.addStretch()
+        c_l.addLayout(nudge_h)
+
+        # Presentation & Modes
+        lbl_mode = QLabel("Lyrics Presentation Mode:", card)
+        lbl_mode.setStyleSheet("font-size: 11px; font-weight: 600; color: #8A8D9B; margin-top: 8px;")
+        c_l.addWidget(lbl_mode)
+
+        self.cmb_view_mode = QComboBox(card)
+        self.cmb_view_mode.addItems(["Multi-line", "Single-line Ticker", "Minimal"])
+        self.cmb_view_mode.currentTextChanged.connect(lambda v: self._set_setting("lyrics_view_mode", v))
+        c_l.addWidget(self.cmb_view_mode)
+
+        # Context lines
+        self.sld_context = ValueSlider(0, 5, 2, " lines", parent=card)
+        self.sld_context.valueChanged.connect(lambda v: self._set_setting("context_lines", v))
+        c_l.addWidget(self.sld_context)
+
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    # --- 3: WALLPAPER STUDIO ---
+    def _build_page_wallpaper(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(10)
+
+        card = GlassCard(radius=16, elevated=False, parent=page)
+        c_l = QVBoxLayout(card)
+        c_l.setContentsMargins(14, 12, 14, 12)
+        c_l.setSpacing(10)
+
+        # Top bar with Enable Switch
+        top_h = QHBoxLayout()
+        lbl_t = QLabel("Wallpaper Studio", card)
+        lbl_t.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        self.sw_wallpaper = ToggleSwitch("Enable Dynamic Desktop Wallpaper", parent=card)
+        self.sw_wallpaper.toggled.connect(lambda v: self._set_setting("wallpaper_enabled", v))
+
+        top_h.addWidget(lbl_t)
+        top_h.addStretch()
+        top_h.addWidget(self.sw_wallpaper)
+        c_l.addLayout(top_h)
+
+        # Interactive Canvas
+        self.wp_canvas = WallpaperPreviewWidget(card)
+        self.wp_canvas.setFixedHeight(220)
+        self.wp_canvas.vinyl_position_changed.connect(self._on_wp_pos_changed)
+        self.wp_canvas.vinyl_size_changed.connect(self._on_wp_size_changed)
+        c_l.addWidget(self.wp_canvas)
+
+        # Alignment Toolbar
+        align_h = QHBoxLayout()
+        btn_al = GlassButton("Align Left", parent=card)
+        btn_al.clicked.connect(lambda: self._align_vinyl(0.20, None))
+        btn_ac = GlassButton("Center", parent=card)
+        btn_ac.clicked.connect(lambda: self._align_vinyl(0.50, 0.50))
+        btn_ar = GlassButton("Align Right", parent=card)
+        btn_ar.clicked.connect(lambda: self._align_vinyl(0.78, None))
+        btn_dbg = GlassButton("Toggle Debug HUD", parent=card)
+        btn_dbg.clicked.connect(self.wp_canvas.toggle_debug_overlay)
+
+        align_h.addWidget(btn_al)
+        align_h.addWidget(btn_ac)
+        align_h.addWidget(btn_ar)
+        align_h.addStretch()
+        align_h.addWidget(btn_dbg)
+        c_l.addLayout(align_h)
+
+        # Controls grid
+        form = QFormLayout()
+        self.cmb_wp_scaling = QComboBox(card)
+        self.cmb_wp_scaling.addItems(["fill", "fit", "stretch", "center"])
+        self.cmb_wp_scaling.currentTextChanged.connect(self._on_wp_scaling_changed)
+        form.addRow("Scaling Mode:", self.cmb_wp_scaling)
+
+        self.cmb_wp_display = QComboBox(card)
+        for opt in get_wallpaper_display_options():
+            self.cmb_wp_display.addItem(opt)
+        self.cmb_wp_display.currentTextChanged.connect(lambda v: self._set_setting("wallpaper_display_mode", v))
+        form.addRow("Target Display:", self.cmb_wp_display)
+
+        c_l.addLayout(form)
+        layout.addWidget(card)
+        return page
+
+    # --- 4: VISUALIZER STUDIO ---
+    def _build_page_visualizer(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(10)
+
+        card = GlassCard(radius=16, elevated=False, parent=page)
+        c_l = QVBoxLayout(card)
+        c_l.setContentsMargins(14, 12, 14, 12)
+        c_l.setSpacing(10)
+
+        # Top Bar
+        top_h = QHBoxLayout()
+        lbl_t = QLabel("Visualizer Studio", card)
+        lbl_t.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        self.sw_vis_enable = ToggleSwitch("Enable Audio Visualizer", parent=card)
+        self.sw_vis_enable.toggled.connect(lambda v: self._set_setting("visualizer_enabled", v))
+
+        top_h.addWidget(lbl_t)
+        top_h.addStretch()
+        top_h.addWidget(self.sw_vis_enable)
+        c_l.addLayout(top_h)
+
+        # Live Preview Canvas
+        self.vis_preview = VisualizerPreviewWidget(card)
+        c_l.addWidget(self.vis_preview)
+
+        # Preview mode switcher (Demo vs Live Audio)
+        mode_h = QHBoxLayout()
+        self.seg_vis_preview = SegmentedSwitch([("play", "Demo Mode"), ("visualizer", "Live Audio Mode")], parent=card)
+        self.seg_vis_preview.switched.connect(lambda idx: self.vis_preview.set_preview_mode("Live Audio" if idx == 1 else "Demo"))
+        mode_h.addWidget(self.seg_vis_preview)
+        mode_h.addStretch()
+        c_l.addLayout(mode_h)
+
+        # Controls
+        form = QFormLayout()
+        self.cmb_vis_style = QComboBox(card)
+        self.cmb_vis_style.addItems(["Pill Bars", "Standard Bars", "Square Bar"])
+        self.cmb_vis_style.currentTextChanged.connect(self._on_vis_style_changed)
+        form.addRow("Bar Style:", self.cmb_vis_style)
+
+        self.sld_vis_bars = ValueSlider(8, 128, 32, " bars", parent=card)
+        self.sld_vis_bars.valueChanged.connect(self._on_vis_bars_changed)
+        form.addRow("Bar Count:", self.sld_vis_bars)
+
+        self.sld_vis_smooth = ValueSlider(0, 100, 75, "%", parent=card)
+        self.sld_vis_smooth.valueChanged.connect(lambda v: self._set_setting("visualizer_smoothing", v))
+        form.addRow("Smoothing:", self.sld_vis_smooth)
+
+        c_l.addLayout(form)
+        layout.addWidget(card)
+        return page
+
+    # --- 5: APPEARANCE ---
+    def _build_page_appearance(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        card = GlassCard(radius=16, elevated=False, parent=page)
+        c_l = QVBoxLayout(card)
+        c_l.setContentsMargins(16, 14, 16, 14)
+        c_l.setSpacing(12)
+
+        lbl_t = QLabel("Global Appearance & Materials", card)
+        lbl_t.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        c_l.addWidget(lbl_t)
+
+        form = QFormLayout()
+        self.cmb_theme_mode = QComboBox(card)
+        self.cmb_theme_mode.addItems(["Dynamic Album Accent", "Manual Accent", "Neutral Dark"])
+        self.cmb_theme_mode.currentTextChanged.connect(lambda v: self._set_setting("theme_mode", v))
+        form.addRow("Accent Mode:", self.cmb_theme_mode)
+
+        self.btn_manual_accent = ColorSwatchButton("#1DB954", card)
+        self.btn_manual_accent.colorChanged.connect(lambda col: self._set_setting("manual_accent_color", col))
+        form.addRow("Manual Accent Color:", self.btn_manual_accent)
+
+        self.sld_glass = ValueSlider(20, 100, 75, "%", parent=card)
+        self.sld_glass.valueChanged.connect(lambda v: self._set_setting("glass_intensity", v))
+        form.addRow("Glass Opacity Intensity:", self.sld_glass)
+
+        c_l.addLayout(form)
+
+        self.sw_reduced_motion = ToggleSwitch("Reduced Motion (disable large animated transitions)", parent=card)
+        self.sw_reduced_motion.toggled.connect(lambda v: self._set_setting("reduced_motion", v))
+        c_l.addWidget(self.sw_reduced_motion)
+
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    # --- 6: BEHAVIOR ---
+    def _build_page_behavior(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        card = GlassCard(radius=16, elevated=False, parent=page)
+        c_l = QVBoxLayout(card)
+        c_l.setContentsMargins(16, 14, 16, 14)
+        c_l.setSpacing(10)
+
+        lbl_t = QLabel("Window Behavior & System Integration", card)
+        lbl_t.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        c_l.addWidget(lbl_t)
+
+        self.sw_topmost = ToggleSwitch("Keep Lyrics Overlay Always on Top", parent=card)
+        self.sw_topmost.toggled.connect(lambda v: self._set_setting("always_on_top", v))
+        c_l.addWidget(self.sw_topmost)
+
+        self.sw_click_thru = ToggleSwitch("Click-Through Mode (pass mouse clicks to desktop/games)", parent=card)
+        self.sw_click_thru.toggled.connect(lambda v: self._set_setting("click_through", v))
+        c_l.addWidget(self.sw_click_thru)
+
+        self.sw_exclude_cap = ToggleSwitch("Exclude from Screen Capture (hide from OBS/Discord)", parent=card)
+        self.sw_exclude_cap.toggled.connect(lambda v: self._set_setting("exclude_from_capture", v))
+        c_l.addWidget(self.sw_exclude_cap)
+
+        self.sw_auto_hide = ToggleSwitch("Auto-hide Lyrics Overlay when playback is paused", parent=card)
+        self.sw_auto_hide.toggled.connect(lambda v: self._set_setting("auto_hide_on_pause", v))
+        c_l.addWidget(self.sw_auto_hide)
+
+        form = QFormLayout()
+        self.cmb_close_act = QComboBox(card)
+        self.cmb_close_act.addItems(["Minimize to Tray", "Hide Window", "Quit App"])
+        self.cmb_close_act.currentTextChanged.connect(lambda v: self._set_setting("close_action", v))
+        form.addRow("Closing Studio Window:", self.cmb_close_act)
+        c_l.addLayout(form)
+
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    # --- 7: SHORTCUTS ---
+    def _build_page_shortcuts(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        card = GlassCard(radius=16, elevated=False, parent=page)
+        c_l = QVBoxLayout(card)
+        c_l.setContentsMargins(16, 14, 16, 14)
+        c_l.setSpacing(10)
+
+        lbl_t = QLabel("Global Keyboard Shortcuts", card)
+        lbl_t.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        c_l.addWidget(lbl_t)
+
+        self.table_shortcuts = QTableWidget(card)
+        self.table_shortcuts.setColumnCount(3)
+        self.table_shortcuts.setHorizontalHeaderLabels(["Action", "Key Combination", "Status"])
+        self.table_shortcuts.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table_shortcuts.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table_shortcuts.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table_shortcuts.verticalHeader().setVisible(False)
+        self.table_shortcuts.setFixedHeight(240)
+        self.table_shortcuts.setStyleSheet("""
+            QTableWidget {
+                background: rgba(24, 28, 38, 0.65);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                color: #FFFFFF;
+            }
+        """)
+
+        self._populate_shortcuts_table()
+        c_l.addWidget(self.table_shortcuts)
+
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    def _populate_shortcuts_table(self):
+        conflicts = find_shortcut_conflicts(self.working_settings)
+        self.table_shortcuts.setRowCount(len(SHORTCUT_DEFINITIONS))
+
+        for row, item in enumerate(SHORTCUT_DEFINITIONS):
+            k_id = item["key_id"]
+            val = self.working_settings.get(k_id, item["default"])
+
+            item_act = QTableWidgetItem(item["name"])
+            item_act.setToolTip(item["description"])
+            self.table_shortcuts.setItem(row, 0, item_act)
+
+            item_key = QTableWidgetItem(val)
+            self.table_shortcuts.setItem(row, 1, item_key)
+
+            if k_id in conflicts:
+                status_item = QTableWidgetItem("⚠️ Conflict")
+                status_item.setForeground(QColor("#FF4757"))
+            else:
+                status_item = QTableWidgetItem("✓ Active")
+                status_item.setForeground(QColor("#2ED573"))
+            self.table_shortcuts.setItem(row, 2, status_item)
+
+    # --- 8: PERFORMANCE ---
+    def _build_page_performance(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        # Gauges row
+        g_row = QHBoxLayout()
+        self.gauge_cpu = MetricGaugeCard("CPU Usage", "1.4%", "Host Process", parent=page)
+        self.gauge_ram = MetricGaugeCard("RAM Usage", "84 MB", "Heap Allocation", parent=page)
+        self.gauge_fps = MetricGaugeCard("Render FPS", "60.0", "Active VSync", parent=page)
+        g_row.addWidget(self.gauge_cpu)
+        g_row.addWidget(self.gauge_ram)
+        g_row.addWidget(self.gauge_fps)
+        layout.addLayout(g_row)
+
+        card = GlassCard(radius=16, elevated=False, parent=page)
+        c_l = QVBoxLayout(card)
+        c_l.setContentsMargins(16, 14, 16, 14)
+        c_l.setSpacing(10)
+
+        lbl_t = QLabel("Power & Rendering Profiles", card)
+        lbl_t.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        c_l.addWidget(lbl_t)
+
+        form = QFormLayout()
+        self.cmb_power_prof = QComboBox(card)
+        self.cmb_power_prof.addItems(["High Performance (60 FPS)", "Balanced (30 FPS)", "Battery Saver (15 FPS)"])
+        self.cmb_power_prof.currentTextChanged.connect(lambda v: self._set_setting("power_profile", v))
+        form.addRow("Active Power Profile:", self.cmb_power_prof)
+
+        self.sld_preview_fps = ValueSlider(15, 120, 60, " FPS", parent=card)
+        self.sld_preview_fps.valueChanged.connect(lambda v: self._set_setting("preview_fps", v))
+        form.addRow("Studio Preview FPS:", self.sld_preview_fps)
+
+        c_l.addLayout(form)
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    # --- 9: DIAGNOSTICS ---
+    def _build_page_diagnostics(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        card = GlassCard(radius=16, elevated=False, parent=page)
+        c_l = QVBoxLayout(card)
+        c_l.setContentsMargins(16, 14, 16, 14)
+        c_l.setSpacing(10)
+
+        top_h = QHBoxLayout()
+        lbl_t = QLabel("Subsystem Health & Live Logs", card)
+        lbl_t.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        btn_copy = GlassButton("Copy Diagnostics", icon_name="clipboard", parent=card)
+        btn_copy.clicked.connect(self._copy_diagnostics)
+        btn_export = GlassButton("Export JSON", icon_name="download", parent=card)
+        btn_export.clicked.connect(self._export_diagnostics)
+
+        top_h.addWidget(lbl_t)
+        top_h.addStretch()
+        top_h.addWidget(btn_copy)
+        top_h.addWidget(btn_export)
+        c_l.addLayout(top_h)
+
+        # Log viewer
+        self.txt_logs = QTextEdit(card)
+        self.txt_logs.setReadOnly(True)
+        self.txt_logs.setFixedHeight(260)
+        self.txt_logs.setStyleSheet("""
+            QTextEdit {
+                background: rgba(10, 13, 20, 0.85);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+                color: #A0A5B5;
+                font-family: 'Consolas', monospace;
+                font-size: 11px;
+                padding: 8px;
+            }
+        """)
+        self._refresh_logs()
+        c_l.addWidget(self.txt_logs)
+
+        # Clear logs button
+        log_act_h = QHBoxLayout()
+        btn_ref_logs = GlassButton("Refresh Logs", parent=card)
+        btn_ref_logs.clicked.connect(self._refresh_logs)
+        btn_clear_logs = GlassButton("Clear Logs", parent=card)
+        btn_clear_logs.clicked.connect(self._clear_logs)
+
+        log_act_h.addWidget(btn_ref_logs)
+        log_act_h.addWidget(btn_clear_logs)
+        log_act_h.addStretch()
+        c_l.addLayout(log_act_h)
+
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    # --- 10: ADVANCED ---
+    def _build_page_advanced(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        card = GlassCard(radius=16, elevated=False, parent=page)
+        c_l = QVBoxLayout(card)
+        c_l.setContentsMargins(16, 14, 16, 14)
+        c_l.setSpacing(10)
+
+        lbl_t = QLabel("Storage Caches & Profile Presets", card)
+        lbl_t.setStyleSheet("font-size: 14px; font-weight: 700; color: #FFFFFF;")
+        c_l.addWidget(lbl_t)
+
+        # Cache stats
+        stats = self.lyrics_client.get_cache_stats()
+        self.lbl_cache_info = QLabel(f"Cached Lyrics: {stats['file_count']} files ({stats['formatted_size']})", card)
+        self.lbl_cache_info.setStyleSheet("font-size: 12px; color: #C5C8D4;")
+        c_l.addWidget(self.lbl_cache_info)
+
+        cache_btn_h = QHBoxLayout()
+        btn_clr_lyrics = GlassButton("Clear Lyrics Cache", parent=card)
+        btn_clr_lyrics.clicked.connect(self._clear_lyrics_cache)
+        btn_clr_all = GlassButton("Clear All Caches", parent=card)
+        btn_clr_all.clicked.connect(self._clear_all_caches)
+
+        cache_btn_h.addWidget(btn_clr_lyrics)
+        cache_btn_h.addWidget(btn_clr_all)
+        cache_btn_h.addStretch()
+        c_l.addLayout(cache_btn_h)
+
+        # Backup & Restore
+        lbl_b = QLabel("Settings Backup & Restore:", card)
+        lbl_b.setStyleSheet("font-size: 12px; font-weight: 600; color: #8A8D9B; margin-top: 10px;")
+        c_l.addWidget(lbl_b)
+
+        bak_h = QHBoxLayout()
+        btn_create_bak = GlassButton("Create Backup", icon_name="download", parent=card)
+        btn_create_bak.clicked.connect(self._create_backup)
+        btn_restore_bak = GlassButton("Restore Backup...", icon_name="refresh", parent=card)
+        btn_restore_bak.clicked.connect(self._restore_backup)
+
+        bak_h.addWidget(btn_create_bak)
+        bak_h.addWidget(btn_restore_bak)
+        bak_h.addStretch()
+        c_l.addLayout(bak_h)
+
+        # About App
+        lbl_about = QLabel(f"Lyrune Studio v2.0.0  •  Qt 6.8  •  Python {platform.python_version()}", card)
+        lbl_about.setStyleSheet("font-size: 11px; color: #525666; margin-top: 14px;")
+        c_l.addWidget(lbl_about)
+
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    # === State Bindings & Handlers ===
+
+    def _set_setting(self, key: str, value: Any):
+        self._record_transaction()
+        self.working_settings[key] = value
+        self._update_unsaved_indicator()
+
+    def _on_media_src_changed(self, text: str):
+        self._set_setting("selected_media_source", text)
+        if self.player:
+            self.player.set_target_source(text)
+
+    def _priority_move_up(self):
+        row = self.list_priority.currentRow()
+        if row > 0:
+            item = self.list_priority.takeItem(row)
+            self.list_priority.insertItem(row - 1, item)
+            self.list_priority.setCurrentRow(row - 1)
+            self._save_priority_from_list()
+
+    def _priority_move_down(self):
+        row = self.list_priority.currentRow()
+        if 0 <= row < self.list_priority.count() - 1:
+            item = self.list_priority.takeItem(row)
+            self.list_priority.insertItem(row + 1, item)
+            self.list_priority.setCurrentRow(row + 1)
+            self._save_priority_from_list()
+
+    def _save_priority_from_list(self):
+        order = [self.list_priority.item(i).text() for i in range(self.list_priority.count())]
+        self._set_setting("source_priority", order)
+        if self.player:
+            self.player.set_source_priority(order)
+
+    def _scan_media_sessions(self):
+        if self.player and hasattr(self.player, "_worker_thread") and self.player._worker_thread:
+            self.player._worker_thread.request_source_scan()
+            log_event("[Media] Requested scan of active GSMTC media sessions.")
+
+    def _open_manual_search(self):
+        art = self.home_artist_lbl.text() if self.home_artist_lbl.text() != "Waiting for media session..." else ""
+        tit = self.home_title_lbl.text() if self.home_title_lbl.text() != "No Track Playing" else ""
+        dlg = ManualLyricSearchDialog(self.lyrics_client, art, tit, parent=self)
+        dlg.lyricsSelected.connect(self._on_custom_lyrics_bound)
+        dlg.move(self.x() + (self.width() - dlg.width()) // 2, self.y() + (self.height() - dlg.height()) // 2)
+        dlg.show()
+
+    def _on_custom_lyrics_bound(self, artist, title, synced, unsynced):
+        log_event(f"[Studio] Custom lyrics bound for '{artist} - {title}'")
+        self.settings_changed.emit(self.working_settings)
+
+    def _quick_refresh_lyrics(self):
+        art = self.home_artist_lbl.text()
+        tit = self.home_title_lbl.text()
+        if art and tit:
+            self.lyrics_client.clear_track_cache(art, tit)
+        self.settings_changed.emit(self.working_settings)
+
+    def _on_wp_pos_changed(self, lx: float, ly: float):
+        self.working_settings["wallpaper_vinyl_x"] = lx
+        self.working_settings["wallpaper_vinyl_y"] = ly
+        self._update_unsaved_indicator()
+
+    def _on_wp_size_changed(self, l_size: float):
+        self.working_settings["wallpaper_vinyl_size"] = l_size
+        self._update_unsaved_indicator()
+
+    def _align_vinyl(self, x: Optional[float], y: Optional[float]):
+        self._record_transaction()
+        if x is not None:
+            self.working_settings["wallpaper_vinyl_x"] = x
+        if y is not None:
+            self.working_settings["wallpaper_vinyl_y"] = y
+        self.wp_canvas.update_vinyl_position(
+            self.working_settings["wallpaper_vinyl_x"],
+            self.working_settings["wallpaper_vinyl_y"]
+        )
+        self._update_unsaved_indicator()
+
+    def _on_wp_scaling_changed(self, mode: str):
+        self._set_setting("wallpaper_scaling_mode", mode)
+        cfg = WallpaperConfig.from_settings(self.working_settings)
+        self.wp_canvas.set_config(cfg)
+
+    def _on_vis_style_changed(self, style_name: str):
+        self._set_setting("visualizer_style", style_name)
+        self.vis_preview.update_style(self.working_settings)
+
+    def _on_vis_bars_changed(self, count: int):
+        self._set_setting("visualizer_bar_count", count)
+        self.vis_preview.update_style(self.working_settings)
+
+    def _copy_diagnostics(self):
+        data = generate_full_diagnostics_report(self.player, self.lyrics_client)
+        text = json.dumps(data, indent=2)
+        QApplication.clipboard().setText(text)
+        log_event("[Diagnostics] Full report copied to clipboard.")
+
+    def _export_diagnostics(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export Diagnostics", "lyrune_diagnostics.json", "JSON (*.json)")
+        if path:
+            data = generate_full_diagnostics_report(self.player, self.lyrics_client)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            log_event(f"[Diagnostics] Exported diagnostics to: {path}")
+
+    def _refresh_logs(self):
+        history = event_logger.get_history()
+        self.txt_logs.setPlainText("\n".join(history))
+        self.txt_logs.verticalScrollBar().setValue(self.txt_logs.verticalScrollBar().maximum())
+
+    def _clear_logs(self):
+        event_logger.clear()
+        self.txt_logs.clear()
+
+    def _clear_lyrics_cache(self):
+        count = self.lyrics_client.clear_cache()
+        stats = self.lyrics_client.get_cache_stats()
+        self.lbl_cache_info.setText(f"Cached Lyrics: {stats['file_count']} files ({stats['formatted_size']})")
+        log_event(f"[Caches] Cleared {count} lyrics cache files.")
+
+    def _clear_all_caches(self):
+        self._clear_lyrics_cache()
+        log_event("[Caches] All caches cleared.")
+
+    def _create_backup(self):
+        path = self.settings_mgr.create_backup()
+        QMessageBox.information(self, "Backup Created", f"Settings backup saved to:\n{path}")
+
+    def _restore_backup(self):
+        backups = self.settings_mgr.list_backups()
+        if not backups:
+            QMessageBox.warning(self, "No Backups", "No backup files found in backup directory.")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Select Backup File", self.settings_mgr.backup_dir, "JSON (*.json)")
+        if path and self.settings_mgr.restore_backup(path):
+            self.saved_settings = dict(self.settings_mgr.settings)
+            self.working_settings = dict(self.saved_settings)
+            self._load_working_settings_to_ui()
+            self._update_unsaved_indicator()
+            self.settings_changed.emit(self.working_settings)
+
+    def _reset_defaults(self):
+        self.working_settings = dict(DEFAULT_SETTINGS)
+        self._load_working_settings_to_ui()
+        self._update_unsaved_indicator()
+
+    def _cancel_changes(self):
+        self.working_settings = dict(self.saved_settings)
+        self._load_working_settings_to_ui()
+        self._update_unsaved_indicator()
+
+    def _apply_changes(self):
+        self.settings_mgr.update(self.working_settings)
+        self.saved_settings = dict(self.working_settings)
+        self._update_unsaved_indicator()
+        self.settings_changed.emit(self.working_settings)
+
+    def _on_ok(self):
+        if self.working_settings != self.saved_settings:
+            self._apply_changes()
+        self.accept()
+
+    def _load_working_settings_to_ui(self):
+        s = self.working_settings
+        self.cmb_media_src.setCurrentText(s.get("selected_media_source", "Auto-Detect"))
+        self.sw_prefer_playing.setChecked(s.get("prefer_playing_session", True))
+        self.sld_sync.setValue(s.get("sync_offset_ms", 0))
+        self.cmb_view_mode.setCurrentText(s.get("lyrics_view_mode", "Multi-line"))
+        self.sld_context.setValue(s.get("context_lines", 2))
+        self.sw_wallpaper.setChecked(s.get("wallpaper_enabled", False))
+        self.cmb_wp_scaling.setCurrentText(s.get("wallpaper_scaling_mode", "fill"))
+        self.cmb_wp_display.setCurrentText(s.get("wallpaper_display_mode", "Primary Display"))
+        self.sw_vis_enable.setChecked(s.get("visualizer_enabled", False))
+        self.cmb_vis_style.setCurrentText(s.get("visualizer_style", "Pill Bars"))
+        self.sld_vis_bars.setValue(s.get("visualizer_bar_count", 32))
+        self.sld_vis_smooth.setValue(s.get("visualizer_smoothing", 75))
+        self.cmb_theme_mode.setCurrentText(s.get("theme_mode", "Dynamic Album Accent"))
+        self.btn_manual_accent.setColor(s.get("manual_accent_color", "#1DB954"))
+        self.sld_glass.setValue(s.get("glass_intensity", 75))
+        self.sw_reduced_motion.setChecked(s.get("reduced_motion", False))
+        self.sw_topmost.setChecked(s.get("always_on_top", True))
+        self.sw_click_thru.setChecked(s.get("click_through", False))
+        self.sw_exclude_cap.setChecked(s.get("exclude_from_capture", False))
+        self.sw_auto_hide.setChecked(s.get("auto_hide_on_pause", False))
+        self.cmb_close_act.setCurrentText(s.get("close_action", "Minimize to Tray"))
+
+        cfg = WallpaperConfig.from_settings(s)
+        self.wp_canvas.set_config(cfg)
+        self.vis_preview.update_style(s)
+        self._populate_shortcuts_table()
+
+    # === Command Palette (Ctrl+K) ===
+
+    def _open_command_palette(self):
+        actions = [
+            {"id": "nav_0", "name": "Go to Home / Overview", "desc": "Live now playing dashboard", "category": "Navigation"},
+            {"id": "nav_1", "name": "Go to Media Sources", "desc": "Priority & session management", "category": "Navigation"},
+            {"id": "nav_2", "name": "Go to Lyrics Workspace", "desc": "Matching, confidence & sync", "category": "Navigation"},
+            {"id": "nav_3", "name": "Go to Wallpaper Studio", "desc": "Scene editor & vinyl placement", "category": "Navigation"},
+            {"id": "nav_4", "name": "Go to Visualizer Studio", "desc": "Live audio & style editor", "category": "Navigation"},
+            {"id": "nav_5", "name": "Go to Appearance", "desc": "Themes, accents & materials", "category": "Navigation"},
+            {"id": "nav_6", "name": "Go to Behavior", "desc": "Window layering & capture", "category": "Navigation"},
+            {"id": "nav_7", "name": "Go to Shortcuts", "desc": "Global hotkey manager", "category": "Navigation"},
+            {"id": "nav_8", "name": "Go to Performance", "desc": "Hardware resource gauges", "category": "Navigation"},
+            {"id": "nav_9", "name": "Go to Diagnostics", "desc": "Subsystem health & logs", "category": "Navigation"},
+            {"id": "nav_10", "name": "Go to Advanced & Caches", "desc": "Storage & backups", "category": "Navigation"},
+            {"id": "act_search", "name": "Find & Correct Lyrics", "desc": "Manual LRCLIB search modal", "category": "Lyrics"},
+            {"id": "act_refresh", "name": "Force Refresh Lyrics", "desc": "Purge cache and re-query", "category": "Lyrics"},
+            {"id": "act_diag_copy", "name": "Copy Diagnostics Report", "desc": "Export health JSON to clipboard", "category": "Diagnostics"},
+        ]
+        dlg = CommandPaletteDialog(actions, parent=self)
+        dlg.actionTriggered.connect(self._on_command_palette_action)
+        dlg.move(self.x() + (self.width() - dlg.width()) // 2, self.y() + 80)
+        dlg.show()
+
+    def _on_command_palette_action(self, action_id: str):
+        if action_id.startswith("nav_"):
+            idx = int(action_id.split("_")[1])
+            self._switch_nav_page(idx)
+        elif action_id == "act_search":
+            self._open_manual_search()
+        elif action_id == "act_refresh":
+            self._quick_refresh_lyrics()
+        elif action_id == "act_diag_copy":
+            self._copy_diagnostics()
+
+    # === Live Media Updates Connection ===
+
+    def _connect_player_signals(self):
+        if self.player and hasattr(self.player, "_worker_thread") and self.player._worker_thread:
+            self.player._worker_thread.media_updated.connect(self._on_media_updated)
+
+    def _on_media_updated(self, info: dict):
+        tit = info.get("title") or "No Track Playing"
+        art = info.get("artist") or "Waiting for media session..."
+        self.home_title_lbl.setText(tit)
+        self.home_artist_lbl.setText(art)
+        self.title_bar.dynamic_island.update_track(tit, art)
+
+        # Album Art
+        art_bytes = info.get("album_art_bytes")
+        if art_bytes:
+            pix = QPixmap()
+            if pix.loadFromData(art_bytes):
+                self.home_art_lbl.setPixmap(pix.scaled(68, 68, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
+                self.title_bar.dynamic_island.update_artwork(pix)
+                accent = extract_dominant_accent(pix)
+                if accent:
+                    self._ambient_accent = accent
+                    self.update()

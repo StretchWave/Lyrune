@@ -5,7 +5,7 @@ import json
 import time
 import hashlib
 import requests
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Any
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from lyrune.logger import log_event
@@ -318,6 +318,124 @@ class LRCLibClient:
             log_event(f"[LRCLib /api/search Exception] {e}")
         return (None, None)
 
+    def get_match_confidence(self, target_artist: str, target_title: str, candidate_artist: str, candidate_title: str,
+                             target_dur: Optional[float] = None, candidate_dur: Optional[float] = None) -> Tuple[int, str]:
+        """
+        Calculates match confidence percentage (0-100%) and level (HIGH, MEDIUM, LOW).
+        Uses word token overlap and duration delta.
+        """
+        norm_t_artist = self._normalize_tag(target_artist)
+        norm_t_title = self._normalize_tag(target_title)
+        norm_c_artist = self._normalize_tag(candidate_artist)
+        norm_c_title = self._normalize_tag(candidate_title)
+
+        # Title similarity (50% weight)
+        t_words = set(norm_t_title.split())
+        c_words = set(norm_c_title.split())
+        if t_words and c_words:
+            title_score = len(t_words & c_words) / max(len(t_words), len(c_words))
+        elif norm_t_title == norm_c_title:
+            title_score = 1.0
+        else:
+            title_score = 0.3
+
+        # Artist similarity (30% weight)
+        a_words = set(norm_t_artist.split())
+        ca_words = set(norm_c_artist.split())
+        if a_words and ca_words:
+            artist_score = len(a_words & ca_words) / max(len(a_words), len(ca_words))
+        elif norm_t_artist == norm_c_artist:
+            artist_score = 1.0
+        else:
+            artist_score = 0.3
+
+        # Duration similarity (20% weight)
+        dur_score = 0.8
+        if target_dur and candidate_dur and target_dur > 0 and candidate_dur > 0:
+            delta = abs(target_dur - candidate_dur)
+            if delta <= 4.0:
+                dur_score = 1.0
+            elif delta <= 12.0:
+                dur_score = 0.8
+            elif delta <= 30.0:
+                dur_score = 0.5
+            else:
+                dur_score = 0.1
+
+        total_pct = int((0.50 * title_score + 0.30 * artist_score + 0.20 * dur_score) * 100)
+        total_pct = max(5, min(99, total_pct))
+
+        if total_pct >= 80:
+            level = "HIGH"
+        elif total_pct >= 55:
+            level = "MEDIUM"
+        else:
+            level = "LOW"
+
+        return total_pct, level
+
+    def search_candidates(self, artist: str = "", title: str = "", duration: Optional[float] = None) -> List[dict]:
+        """
+        Searches LRCLIB and returns enriched candidate items with confidence ratings.
+        """
+        raw_items = self.search_lyrics(artist, title)
+        enriched = []
+        for item in raw_items:
+            c_artist = item.get("artistName", "")
+            c_title = item.get("trackName", "")
+            c_dur = item.get("duration")
+
+            pct, level = self.get_match_confidence(artist, title, c_artist, c_title, duration, c_dur)
+            has_synced = bool(item.get("syncedLyrics"))
+            has_plain = bool(item.get("plainLyrics"))
+
+            enriched.append({
+                "id": item.get("id"),
+                "artist": c_artist,
+                "title": c_title,
+                "album": item.get("albumName", ""),
+                "duration": c_dur or 0,
+                "has_synced": has_synced,
+                "has_plain": has_plain,
+                "synced_lyrics": item.get("syncedLyrics") or "",
+                "plain_lyrics": item.get("plainLyrics") or "",
+                "confidence_pct": pct,
+                "confidence_level": level
+            })
+
+        # Sort highest confidence and synced first
+        enriched.sort(key=lambda x: (x["has_synced"], x["confidence_pct"]), reverse=True)
+        return enriched
+
+    def bind_custom_lyrics(self, artist: str, title: str, synced: str, unsynced: str) -> None:
+        """Manually binds and caches lyrics chosen by the user."""
+        key = self._cache_key(artist, title)
+        self._mem_cache[key] = (synced or None, unsynced or None)
+        if key in self._failure_cache:
+            del self._failure_cache[key]
+        self._save_disk_cache(artist, title, synced or None, unsynced or None)
+        log_event(f"✨ [LRCLib] Manually bound custom lyrics for '{artist} - {title}'")
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Returns total cached lyrics files and total disk bytes."""
+        total_files = 0
+        total_bytes = 0
+        try:
+            if os.path.exists(_CACHE_DIR):
+                for f in os.listdir(_CACHE_DIR):
+                    if f.endswith(".json"):
+                        fp = os.path.join(_CACHE_DIR, f)
+                        total_files += 1
+                        total_bytes += os.path.getsize(fp)
+        except Exception:
+            pass
+        return {
+            "file_count": total_files,
+            "total_bytes": total_bytes,
+            "formatted_size": f"{total_bytes / 1024:.1f} KB" if total_bytes < 1048576 else f"{total_bytes / 1048576:.2f} MB",
+            "cache_dir": _CACHE_DIR
+        }
+
     def clear_track_cache(self, artist: str, title: str) -> None:
         """Purges memory and disk cache for a specific track to force a fresh online reload."""
         key = self._cache_key(artist, title)
@@ -333,14 +451,19 @@ class LRCLibClient:
                 pass
         log_event(f"[LRCLib Cache] Cleared cache for track: '{artist} - {title}'")
 
-    def clear_cache(self) -> None:
-        """Clears both in-memory and disk caches."""
+    def clear_cache(self) -> int:
+        """Clears both in-memory and disk caches, returning count of deleted files."""
         self._mem_cache.clear()
         self._failure_cache.clear()
+        deleted = 0
         try:
-            for f in os.listdir(_CACHE_DIR):
-                fp = os.path.join(_CACHE_DIR, f)
-                if os.path.isfile(fp) and f.endswith(".json"):
-                    os.remove(fp)
+            if os.path.exists(_CACHE_DIR):
+                for f in os.listdir(_CACHE_DIR):
+                    fp = os.path.join(_CACHE_DIR, f)
+                    if os.path.isfile(fp) and f.endswith(".json"):
+                        os.remove(fp)
+                        deleted += 1
         except Exception:
             pass
+        log_event(f"[LRCLib Cache] Cleared {deleted} cached files.")
+        return deleted

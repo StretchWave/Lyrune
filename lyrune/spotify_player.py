@@ -143,6 +143,10 @@ class SpotifyPlayer(QObject):
         self._cached_art_bytes: Optional[bytes] = None
 
         self._target_source: str = "Auto-Detect"
+        self._source_priority: List[str] = [
+            "Spotify Desktop", "Spotify Web", "YouTube Music", "Brave", "Chrome", "Edge", "Firefox", "Opera"
+        ]
+        self._prefer_playing_session: bool = True
 
         # Logging throttle: track what we last logged to avoid duplicate spam
         self._last_logged_track: str = ""
@@ -161,6 +165,15 @@ class SpotifyPlayer(QObject):
         }
         self._worker_thread: Optional[MediaWorkerThread] = None
         self._init_backend()
+
+    def set_source_priority(self, priority_list: List[str]) -> None:
+        """Sets the priority order of media sessions for Auto-Detect."""
+        if priority_list:
+            self._source_priority = list(priority_list)
+
+    def set_prefer_playing(self, prefer: bool) -> None:
+        """Sets whether currently playing sessions are given top priority."""
+        self._prefer_playing_session = bool(prefer)
 
     def set_target_source(self, source_name: str) -> None:
         """Sets target media source (e.g. 'Auto-Detect', 'Brave', 'Spotify.exe')."""
@@ -608,7 +621,25 @@ class SpotifyPlayer(QObject):
                         if self._target_source == "Auto-Detect" and not is_music:
                             continue
 
-                        quality = 3 if status_num == 4 else 2
+                        # Auto-Detect ranking based on user source priority & playback state
+                        app_priority = 999
+                        priority_list = getattr(self, "_source_priority", [
+                            "Spotify Desktop", "Spotify Web", "YouTube Music", "Brave", "Chrome", "Edge", "Firefox", "Opera"
+                        ])
+                        for prio_idx, prio_name in enumerate(priority_list):
+                            p_clean = prio_name.lower().replace(" ", "").replace("desktop", "").replace("web", "")
+                            if p_clean and p_clean in app_id:
+                                app_priority = prio_idx
+                                break
+
+                        # Score tuple: (0 if playing else 1, priority index)
+                        is_playing = (status_num == 4)
+                        prefer_playing = getattr(self, "_prefer_playing_session", True)
+                        
+                        if prefer_playing:
+                            session_score = (0 if is_playing else 1, app_priority)
+                        else:
+                            session_score = (app_priority, 0 if is_playing else 1)
 
                         # Target source matching
                         if self._target_source != "Auto-Detect":
@@ -620,9 +651,9 @@ class SpotifyPlayer(QObject):
                                 clean_artist, clean_title = c_art, c_tit
                                 break
                         else:
-                            # Auto-Detect: select the session with highest quality score
-                            if quality > best_quality:
-                                best_quality = quality
+                            # Auto-Detect: select lowest score tuple
+                            if best_session is None or session_score < best_quality:
+                                best_quality = session_score
                                 best_session = (s, p, c_art, c_tit)
 
                 if not session and self._target_source == "Auto-Detect" and best_session:
