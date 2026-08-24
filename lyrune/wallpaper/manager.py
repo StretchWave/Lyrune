@@ -422,14 +422,24 @@ class WallpaperManager(QObject):
             self._canvas.update()
 
     def _paint_vinyl(self, painter: QPainter, canvas_rect: QRect) -> None:
-        """Paints the vinyl overlay on the wallpaper canvas."""
+        """Paints the vinyl overlay on the wallpaper canvas using WallpaperTransform."""
         w = canvas_rect.width()
         h = canvas_rect.height()
 
-        # Convert normalized coordinates to pixel coordinates
-        center_x = self._config.vinyl_x * w
-        center_y = self._config.vinyl_y * h
-        diameter = self._config.vinyl_size * w
+        from lyrune.wallpaper.transform import WallpaperTransform
+        from PyQt6.QtCore import QSizeF
+
+        src_w = 16.0
+        src_h = 9.0
+        if self._active_renderer and hasattr(self._active_renderer, "_cached_pixmap") and self._active_renderer._cached_pixmap:
+            pix = self._active_renderer._cached_pixmap
+            if not pix.isNull():
+                src_w = float(pix.width())
+                src_h = float(pix.height())
+
+        transform = WallpaperTransform(QSizeF(src_w, src_h), QSizeF(w, h), self._config.scaling_mode)
+        center_x, center_y = transform.logical_to_viewport(self._config.vinyl_x, self._config.vinyl_y)
+        diameter = transform.logical_to_viewport_size(self._config.vinyl_size)
 
         self._vinyl_renderer.render(
             painter,
@@ -476,10 +486,21 @@ class WallpaperManager(QObject):
         else:
             painter.fillRect(rect, QColor(0, 0, 0))
 
-        # 2. Vinyl record overlay
-        center_x = self._config.vinyl_x * w
-        center_y = self._config.vinyl_y * h
-        diameter = self._config.vinyl_size * min(w, h)
+        # 2. Vinyl record overlay via canonical WallpaperTransform
+        from lyrune.wallpaper.transform import WallpaperTransform
+        from PyQt6.QtCore import QSizeF
+
+        src_w = 16.0
+        src_h = 9.0
+        if self._active_renderer and hasattr(self._active_renderer, "_cached_pixmap") and self._active_renderer._cached_pixmap:
+            pix = self._active_renderer._cached_pixmap
+            if not pix.isNull():
+                src_w = float(pix.width())
+                src_h = float(pix.height())
+
+        transform = WallpaperTransform(QSizeF(src_w, src_h), QSizeF(w, h), self._config.scaling_mode)
+        center_x, center_y = transform.logical_to_viewport(self._config.vinyl_x, self._config.vinyl_y)
+        diameter = transform.logical_to_viewport_size(self._config.vinyl_size)
 
         self._vinyl_renderer.render(
             painter,

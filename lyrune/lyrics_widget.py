@@ -937,7 +937,7 @@ class LyricsWidget(QWidget):
 
     def _open_settings(self):
         if self.settings_dialog is None:
-            self.settings_dialog = SettingsDialog(self.settings_mgr, player=self.player, parent=self)
+            self.settings_dialog = SettingsDialog(self.settings_mgr, player=self.player, parent=None)
             self.settings_dialog.settings_changed.connect(self._apply_settings)
             self.settings_dialog.show()
             self.settings_dialog.raise_()
@@ -945,7 +945,7 @@ class LyricsWidget(QWidget):
         else:
             self.settings_dialog._refresh_media_sources()
             if self.settings_dialog.isMinimized():
-                self.settings_dialog.setWindowState(Qt.WindowState.WindowNoState)
+                self.settings_dialog.showNormal()
             self.settings_dialog.show()
             self.settings_dialog.raise_()
             self.settings_dialog.activateWindow()

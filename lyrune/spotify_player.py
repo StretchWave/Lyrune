@@ -237,6 +237,10 @@ class SpotifyPlayer(QObject):
         else:
             return self._get_info_playerctl()
 
+    def get_current_track_info(self) -> Dict[str, Any]:
+        """Alias for get_playback_info()."""
+        return self.get_playback_info()
+
     def request_source_scan(self):
         """
         Requests an async media source scan from the worker thread.

@@ -48,24 +48,85 @@ if sys.platform == "win32":
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
     user32.IsWindowVisible.restype = wintypes.BOOL
 
-    # Win32 Extended Window Style Flags
-    GWL_EXSTYLE = -20
-    WS_EX_TOPMOST = 0x00000008
-    WS_EX_TRANSPARENT = 0x00000020
-    WS_EX_TOOLWINDOW = 0x00000080
-    WS_EX_LAYERED = 0x00080000
-    WS_EX_NOACTIVATE = 0x08000000
-
-    # Win32 SetWindowPos Flags
-    HWND_TOPMOST = ctypes.c_void_p(-1).value
-    HWND_NOTOPMOST = ctypes.c_void_p(-2).value
-    HWND_BOTTOM = ctypes.c_void_p(1).value
-    SWP_NOSIZE = 0x0001
-    SWP_NOMOVE = 0x0002
-    SWP_NOACTIVATE = 0x0010
-    SWP_SHOWWINDOW = 0x0040
-
     GW_HWNDNEXT = 2
+
+
+def enable_acrylic_blur(hwnd: int, dark_tint: int = 0x9910121A) -> bool:
+    """
+    Enables native Windows 10/11 DWM Acrylic / BlurBehind on a window HWND.
+    Enables hardware GPU backdrop blur for authentic translucent glass surfaces.
+    """
+    if sys.platform != "win32":
+        return False
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        dwmapi = ctypes.windll.dwmapi
+
+        class MARGINS(ctypes.Structure):
+            _fields_ = [
+                ("cxLeftWidth", ctypes.c_int),
+                ("cxRightWidth", ctypes.c_int),
+                ("cyTopHeight", ctypes.c_int),
+                ("cyBottomHeight", ctypes.c_int)
+            ]
+
+        # 1. Extend frame into client area
+        margins = MARGINS(-1, -1, -1, -1)
+        dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+
+        # 2. Windows 11 DwmSetWindowAttribute backdrop (DWMWA_SYSTEMBACKDROP_TYPE = 38, 3 = Acrylic)
+        try:
+            dark_mode = ctypes.c_int(1)
+            dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark_mode), ctypes.sizeof(dark_mode))
+
+            backdrop_type = ctypes.c_int(3)
+            res = dwmapi.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(backdrop_type), ctypes.sizeof(backdrop_type))
+            if res == 0:
+                return True
+        except Exception:
+            pass
+
+        # 3. Windows 10 SetWindowCompositionAttribute fallback
+        try:
+            class ACCENT_POLICY(ctypes.Structure):
+                _fields_ = [
+                    ("AccentState", ctypes.c_uint),
+                    ("AccentFlags", ctypes.c_uint),
+                    ("GradientColor", ctypes.c_uint),
+                    ("AnimationId", ctypes.c_uint)
+                ]
+
+            class WINCOMPATTRDATA(ctypes.Structure):
+                _fields_ = [
+                    ("Attribute", ctypes.c_uint),
+                    ("Data", ctypes.c_void_p),
+                    ("SizeOfData", ctypes.c_size_t)
+                ]
+
+            accent = ACCENT_POLICY()
+            accent.AccentState = 4  # ACCENT_ENABLE_ACRYLICBLURBEHIND
+            accent.AccentFlags = 2
+            accent.GradientColor = dark_tint
+
+            data = WINCOMPATTRDATA()
+            data.Attribute = 19  # WCA_ACCENT_POLICY
+            data.Data = ctypes.cast(ctypes.byref(accent), ctypes.c_void_p)
+            data.SizeOfData = ctypes.sizeof(accent)
+
+            set_attr = getattr(user32, "SetWindowCompositionAttribute", None)
+            if set_attr:
+                set_attr(hwnd, ctypes.byref(data))
+                return True
+        except Exception:
+            pass
+
+        return False
+    except Exception:
+        return False
 
 
 
