@@ -198,16 +198,18 @@ class LRCLibClient:
                 if synced_s or unsynced_s:
                     synced, unsynced = synced_s, unsynced_s
 
-        # 7. Fallback: try primary artist & clean title (strip TikTok/remix tags and secondary artists)
+        # 7. Fallback: try primary artist & clean title (strip TikTok/remix/featured tags and secondary artists)
         if synced is None:
             import re
             clean_artist = re.split(r'[,&]|\s+(?:ft|feat)\.?', artist, flags=re.IGNORECASE)[0].strip()
             clean_title = re.sub(r'\s*-\s*TikTok.*$', '', title, flags=re.IGNORECASE).strip()
-            clean_title = re.sub(r'\s*\((?:TikTok|Remix|Official Video|Lyric Video|Radio Edit|Video|Audio|Deluxe|Bonus).*?\)', '', clean_title, flags=re.IGNORECASE).strip()
+            clean_title = re.sub(r'\s*\((?:TikTok|Remix|Official Video|Lyric Video|Radio Edit|Video|Audio|Deluxe|Bonus|feat\..*?|ft\..*?|with\s+.*?|from\s+.*?|.*?)\)', '', clean_title, flags=re.IGNORECASE).strip()
 
-            if (clean_artist != artist or clean_title != title) and (clean_artist or clean_title):
+            if (clean_artist != artist or clean_title != title) and clean_artist and clean_title:
                 log_event(f"[LRCLib] Retrying with cleaned query '{clean_artist}' - '{clean_title}'...")
-                synced_c, unsynced_c = self._api_search(clean_artist or artist, clean_title or title)
+                synced_c, unsynced_c = self._api_get(clean_artist, clean_title)
+                if not synced_c:
+                    synced_c, unsynced_c = self._api_search(clean_artist, clean_title)
                 if synced_c:
                     synced = synced_c
                 if unsynced_c and not unsynced:

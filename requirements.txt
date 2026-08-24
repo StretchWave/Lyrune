@@ -4,5 +4,6 @@ requests>=2.28.0,<3.0.0
 winrt-Windows.Media.Control>=3.2.1; sys_platform == "win32"
 winrt-Windows.Foundation>=3.2.1; sys_platform == "win32"
 winrt-Windows.Foundation.Collections>=3.2.1; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=3.2.1; sys_platform == "win32"
 dbus-python>=1.2.18; sys_platform == "linux"
 pywin32>=306; sys_platform == "win32"

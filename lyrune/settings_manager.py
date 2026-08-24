@@ -47,7 +47,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "snap_to_corners": True,      # Snap overlay to screen borders/corners when dragged near edges
 
     # Standalone Visualizer Settings
-    "visualizer_enabled": True,
+    "visualizer_enabled": False,
     "visualizer_style": "Pill Bars",
     "visualizer_shape": "Pill",        # "Pill", "Rounded Bar", "Square Bar"
     "visualizer_corner_radius": 4,     # px corner radius for Rounded Bar
@@ -88,6 +88,24 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "shortcut_toggle_game_overlay": "Ctrl+Shift+G",
     "visualizer_normal_snapshot": {},
     "visualizer_game_snapshot": {},
+
+    # Desktop Wallpaper System Settings
+    "wallpaper_enabled": False,
+    "wallpaper_type": "static",               # "static", "video"
+    "wallpaper_path": "",
+    "wallpaper_scaling_mode": "fill",         # "fill", "fit", "stretch", "center"
+    "wallpaper_display_mode": "Primary Display", # "Primary Display", "All Displays", "Monitor 1", ...
+    "wallpaper_vinyl_x": 0.78,                # Normalized [0.0, 1.0]
+    "wallpaper_vinyl_y": 0.65,                # Normalized [0.0, 1.0]
+    "wallpaper_vinyl_size": 0.20,             # Normalized diameter [0.05, 0.60]
+    "wallpaper_vinyl_opacity": 100,           # 0 to 100%
+    "wallpaper_rotation_speed": 12.0,         # Seconds per revolution
+    "wallpaper_show_title": True,
+    "wallpaper_show_artist": True,
+    "wallpaper_rotate_while_playing": True,
+    "wallpaper_pause_on_music_pause": True,
+    "wallpaper_pause_on_battery": False,
+    "wallpaper_pause_on_fullscreen": False,
 }
 
 PRESETS: Dict[str, Dict[str, Any]] = {

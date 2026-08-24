@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QPushButton, QComboBox, QFontComboBox, QTextEdit, QCheckBox, QListWidget, QListWidgetItem, QStackedWidget,
     QScrollArea, QFrame, QApplication, QLineEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog
 )
 
 from lyrune.ui_theme import (
@@ -23,6 +23,9 @@ from lyrune.animation_engine import LyricsRenderer
 from lyrune.lrclib_client import LRCLibClient
 from lyrune.visualizer import BarVisualizer, AudioData
 from lyrune.window_utils import get_available_screen_options
+from lyrune.wallpaper.preview_widget import WallpaperPreviewWidget
+from lyrune.wallpaper.model import WallpaperConfig, MediaSnapshot
+from lyrune.wallpaper.monitor import get_wallpaper_display_options
 
 
 class VisualizerPreviewWidget(QWidget):
@@ -501,6 +504,7 @@ class SettingsDialog(QDialog):
 
         self._sidebar_items = [
             ("appearance", "Appearance"),
+            ("wallpaper", "Wallpaper"),
             ("visualizer", "Visualizer"),
             ("typography", "Typography"),
             ("behavior", "Behavior && Source"),
@@ -523,11 +527,11 @@ class SettingsDialog(QDialog):
         right_layout.setSpacing(10)
 
         # Top Preview Canvas Card
-        preview_box = QGroupBox("Preview Canvas", right_container)
-        preview_layout = QVBoxLayout(preview_box)
+        self.preview_box = QGroupBox("Preview Canvas", right_container)
+        preview_layout = QVBoxLayout(self.preview_box)
         preview_layout.setContentsMargins(10, 10, 10, 10)
 
-        self.preview_container = QWidget(preview_box)
+        self.preview_container = QWidget(self.preview_box)
         self.preview_container.setFixedHeight(95)
         container_layout = QVBoxLayout(self.preview_container)
         container_layout.setContentsMargins(4, 4, 4, 4)
@@ -547,7 +551,7 @@ class SettingsDialog(QDialog):
         container_layout.addWidget(self.preview_renderer, 1)
         container_layout.addWidget(self.preview_sub)
         preview_layout.addWidget(self.preview_container)
-        right_layout.addWidget(preview_box)
+        right_layout.addWidget(self.preview_box)
 
         # Stacked Pages
         self.pages_stack = QStackedWidget(right_container)
@@ -555,6 +559,10 @@ class SettingsDialog(QDialog):
         self.appearance_page = QWidget()
         self._init_appearance_page()
         self.pages_stack.addWidget(self._wrap_in_scroll_area(self.appearance_page))
+
+        self.wallpaper_page = QWidget()
+        self._init_wallpaper_page()
+        self.pages_stack.addWidget(self._wrap_in_scroll_area(self.wallpaper_page))
 
         self.visualizer_page = QWidget()
         self._init_visualizer_page()
@@ -601,10 +609,13 @@ class SettingsDialog(QDialog):
     def _on_sidebar_changed(self, index: int):
         if 0 <= index < len(self._sidebar_items):
             self.pages_stack.setCurrentIndex(index)
+            key, label = self._sidebar_items[index]
+            if hasattr(self, 'preview_box'):
+                self.preview_box.setVisible(key not in ("wallpaper", "visualizer"))
             for i in range(self.sidebar_nav.count()):
-                key, label = self._sidebar_items[i]
+                k, l = self._sidebar_items[i]
                 color = PALETTE.accent if i == index else PALETTE.text_secondary
-                self.sidebar_nav.item(i).setIcon(get_icon(key, color=color))
+                self.sidebar_nav.item(i).setIcon(get_icon(k, color=color))
 
     # --- Page 0: Appearance ---
     def _init_appearance_page(self):
@@ -681,7 +692,198 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(effects_group)
 
-    # --- Page 1: Visualizer Studio ---
+    # --- Page 1: Desktop Wallpaper Studio ---
+    def _init_wallpaper_page(self):
+        layout = QVBoxLayout(self.wallpaper_page)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
+
+        # 1. Live Interactive Wallpaper Preview Studio
+        preview_card = QGroupBox("Interactive Wallpaper Preview Studio", self.wallpaper_page)
+        preview_card_layout = QVBoxLayout(preview_card)
+        preview_card_layout.setContentsMargins(8, 8, 8, 8)
+        preview_card_layout.setSpacing(6)
+
+        self.wallpaper_preview = WallpaperPreviewWidget(preview_card)
+        self.wallpaper_preview.vinyl_position_changed.connect(self._on_preview_vinyl_pos_changed)
+        self.wallpaper_preview.vinyl_size_changed.connect(self._on_preview_vinyl_size_changed)
+        preview_card_layout.addWidget(self.wallpaper_preview)
+
+        hint_label = QLabel(
+            "💡 <b>Interactive Canvas:</b> Drag the vinyl record directly inside the preview to position it. "
+            "Drag the green corner handle to resize.",
+            self.wallpaper_page
+        )
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("padding: 4px 8px; background-color: rgba(255,255,255,0.04); border-radius: 6px; font-size: 8.5pt; color: #8A8D9B;")
+        preview_card_layout.addWidget(hint_label)
+        layout.addWidget(preview_card)
+
+        # 2. Desktop Wallpaper Master Toggle & Background Source
+        bg_group = QGroupBox("Desktop Wallpaper Background", self.wallpaper_page)
+        bg_form = QFormLayout(bg_group)
+
+        self.wallpaper_enable_switch = ToggleSwitch("Enable Desktop Wallpaper Mode", self)
+        self.wallpaper_enable_switch.toggled.connect(self._on_control_changed)
+        bg_form.addRow("", self.wallpaper_enable_switch)
+
+        self.wallpaper_type_combo = QComboBox(self)
+        self.wallpaper_type_combo.addItems(["Static Image", "Live Video"])
+        self.wallpaper_type_combo.currentTextChanged.connect(self._on_wallpaper_type_changed)
+        bg_form.addRow("Wallpaper Type:", self.wallpaper_type_combo)
+
+        file_row = QHBoxLayout()
+        self.wallpaper_path_input = QLineEdit(self)
+        self.wallpaper_path_input.setPlaceholderText("Select image or video file path...")
+        self.wallpaper_path_input.textChanged.connect(self._on_wallpaper_path_text_changed)
+        file_row.addWidget(self.wallpaper_path_input, 1)
+
+        self.btn_browse_wallpaper = QPushButton("Browse...", self)
+        self.btn_browse_wallpaper.setObjectName("btn_secondary")
+        self.btn_browse_wallpaper.setIcon(get_icon("search", color=PALETTE.text_primary))
+        self.btn_browse_wallpaper.clicked.connect(self._browse_wallpaper_file)
+        file_row.addWidget(self.btn_browse_wallpaper)
+        bg_form.addRow("Wallpaper File:", file_row)
+
+        self.wallpaper_scaling_combo = QComboBox(self)
+        self.wallpaper_scaling_combo.addItems(["Fill", "Fit", "Stretch", "Center"])
+        self.wallpaper_scaling_combo.currentTextChanged.connect(self._on_wallpaper_scaling_changed)
+        bg_form.addRow("Scaling Mode:", self.wallpaper_scaling_combo)
+
+        self.wallpaper_display_combo = QComboBox(self)
+        self.wallpaper_display_combo.addItems(get_wallpaper_display_options())
+        self.wallpaper_display_combo.currentTextChanged.connect(self._on_control_changed)
+        bg_form.addRow("Target Display:", self.wallpaper_display_combo)
+
+        layout.addWidget(bg_group)
+
+        # 3. Animated Vinyl Record & Metadata
+        vinyl_group = QGroupBox("Animated Vinyl Record && Metadata", self.wallpaper_page)
+        vinyl_form = QFormLayout(vinyl_group)
+
+        self.wallpaper_vinyl_size_slider = ValueSlider(5, 60, 20, "%", self)
+        self.wallpaper_vinyl_size_slider.valueChanged.connect(self._on_wallpaper_vinyl_size_slider_changed)
+        vinyl_form.addRow("Vinyl Diameter:", self.wallpaper_vinyl_size_slider)
+
+        self.wallpaper_vinyl_opacity_slider = ValueSlider(0, 100, 100, "%", self)
+        self.wallpaper_vinyl_opacity_slider.valueChanged.connect(self._on_wallpaper_vinyl_opacity_changed)
+        vinyl_form.addRow("Vinyl Opacity:", self.wallpaper_vinyl_opacity_slider)
+
+        self.wallpaper_rotation_speed_slider = ValueSlider(2, 60, 12, " sec/rev", self)
+        self.wallpaper_rotation_speed_slider.valueChanged.connect(self._on_wallpaper_rotation_speed_changed)
+        vinyl_form.addRow("Rotation Speed:", self.wallpaper_rotation_speed_slider)
+
+        self.wallpaper_rotate_playing_switch = ToggleSwitch("Rotate Vinyl While Music is Playing", self)
+        self.wallpaper_rotate_playing_switch.toggled.connect(self._on_wallpaper_toggle_changed)
+        vinyl_form.addRow("", self.wallpaper_rotate_playing_switch)
+
+        self.wallpaper_pause_on_music_switch = ToggleSwitch("Pause Rotation When Music Pauses", self)
+        self.wallpaper_pause_on_music_switch.toggled.connect(self._on_wallpaper_toggle_changed)
+        vinyl_form.addRow("", self.wallpaper_pause_on_music_switch)
+
+        self.wallpaper_show_title_switch = ToggleSwitch("Show Song Title Below Vinyl", self)
+        self.wallpaper_show_title_switch.toggled.connect(self._on_wallpaper_toggle_changed)
+        vinyl_form.addRow("", self.wallpaper_show_title_switch)
+
+        self.wallpaper_show_artist_switch = ToggleSwitch("Show Artist Name Below Vinyl", self)
+        self.wallpaper_show_artist_switch.toggled.connect(self._on_wallpaper_toggle_changed)
+        vinyl_form.addRow("", self.wallpaper_show_artist_switch)
+
+        layout.addWidget(vinyl_group)
+
+        # 4. Performance & Power
+        perf_group = QGroupBox("Power && Performance", self.wallpaper_page)
+        perf_form = QFormLayout(perf_group)
+
+        self.wallpaper_pause_battery_switch = ToggleSwitch("Pause Video When on Battery Power", self)
+        self.wallpaper_pause_battery_switch.toggled.connect(self._on_control_changed)
+        perf_form.addRow("", self.wallpaper_pause_battery_switch)
+
+        self.wallpaper_pause_fullscreen_switch = ToggleSwitch("Pause When a Fullscreen Game / App is Focused", self)
+        self.wallpaper_pause_fullscreen_switch.toggled.connect(self._on_control_changed)
+        perf_form.addRow("", self.wallpaper_pause_fullscreen_switch)
+
+        layout.addWidget(perf_group)
+
+    def _browse_wallpaper_file(self):
+        is_video = self.wallpaper_type_combo.currentText() == "Live Video"
+        if is_video:
+            filter_str = "Video Files (*.mp4 *.webm *.mkv *.avi *.mov);;All Files (*.*)"
+        else:
+            filter_str = "Image Files (*.png *.jpg *.jpeg *.webp *.bmp);;All Files (*.*)"
+
+        path, _ = QFileDialog.getOpenFileName(self, "Select Wallpaper Background", "", filter_str)
+        if path:
+            self.wallpaper_path_input.setText(path)
+            scaling = self.wallpaper_scaling_combo.currentText().lower().split()[0]
+            self.wallpaper_preview.set_background(path, scaling)
+            self._on_control_changed()
+
+    def _on_wallpaper_type_changed(self, text: str):
+        self._on_control_changed()
+
+    def _on_wallpaper_path_text_changed(self, text: str):
+        scaling = self.wallpaper_scaling_combo.currentText().lower().split()[0]
+        self.wallpaper_preview.set_background(text, scaling)
+        self._on_control_changed()
+
+    def _on_wallpaper_scaling_changed(self, text: str):
+        mode = text.lower().split()[0]
+        path = self.wallpaper_path_input.text().strip()
+        self.wallpaper_preview.set_background(path, mode)
+        self._on_control_changed()
+
+    def _on_preview_vinyl_pos_changed(self, x: float, y: float):
+        self.working_settings["wallpaper_vinyl_x"] = x
+        self.working_settings["wallpaper_vinyl_y"] = y
+        self._on_control_changed()
+
+    def _on_preview_vinyl_size_changed(self, size: float):
+        percent = int(size * 100)
+        self.wallpaper_vinyl_size_slider.setValue(percent)
+        self.working_settings["wallpaper_vinyl_size"] = size
+        self._on_control_changed()
+
+    def _on_wallpaper_vinyl_size_slider_changed(self, value: int):
+        normalized = value / 100.0
+        self.wallpaper_preview.update_vinyl_size(normalized)
+        self._on_control_changed()
+
+    def _on_wallpaper_vinyl_opacity_changed(self, value: int):
+        self.wallpaper_preview._config.vinyl_opacity = value
+        self.wallpaper_preview.update()
+        self._on_control_changed()
+
+    def _on_wallpaper_rotation_speed_changed(self, value: int):
+        self.wallpaper_preview._config.rotation_speed = float(value)
+        self._on_control_changed()
+
+    def _on_wallpaper_toggle_changed(self, checked: bool):
+        self._sync_wallpaper_preview_config()
+        self._on_control_changed()
+
+    def _sync_wallpaper_preview_config(self):
+        if not hasattr(self, 'wallpaper_preview'):
+            return
+        cfg = WallpaperConfig(
+            enabled=self.wallpaper_enable_switch.isChecked(),
+            wallpaper_type="video" if self.wallpaper_type_combo.currentText() == "Live Video" else "static",
+            wallpaper_path=self.wallpaper_path_input.text().strip(),
+            scaling_mode=self.wallpaper_scaling_combo.currentText().lower().split()[0],
+            display_mode=self.wallpaper_display_combo.currentText(),
+            vinyl_x=self.working_settings.get("wallpaper_vinyl_x", 0.78),
+            vinyl_y=self.working_settings.get("wallpaper_vinyl_y", 0.65),
+            vinyl_size=self.wallpaper_vinyl_size_slider.value() / 100.0,
+            vinyl_opacity=self.wallpaper_vinyl_opacity_slider.value(),
+            rotation_speed=float(self.wallpaper_rotation_speed_slider.value()),
+            show_title=self.wallpaper_show_title_switch.isChecked(),
+            show_artist=self.wallpaper_show_artist_switch.isChecked(),
+            rotate_while_playing=self.wallpaper_rotate_playing_switch.isChecked(),
+            pause_on_music_pause=self.wallpaper_pause_on_music_switch.isChecked(),
+        )
+        self.wallpaper_preview.set_config(cfg)
+
+    # --- Page 2: Visualizer Studio ---
     def _init_visualizer_page(self):
         layout = QVBoxLayout(self.visualizer_page)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -1414,7 +1616,7 @@ class SettingsDialog(QDialog):
         self.keycap_plus.setKeySequence(QKeySequence(s.get("shortcut_nudge_plus", "Ctrl+Right")))
 
         # Visualizer Studio settings loading
-        self.vis_enable_switch.setChecked_silent(s.get("visualizer_enabled", True))
+        self.vis_enable_switch.setChecked_silent(s.get("visualizer_enabled", False))
         self.vis_style_combo.setCurrentText(s.get("visualizer_style", "Pill Bars"))
 
         shape = s.get("visualizer_shape", "Pill")
@@ -1471,6 +1673,31 @@ class SettingsDialog(QDialog):
         if hasattr(self, 'vis_preview'):
             self.vis_preview.update_style(s)
 
+        # Wallpaper Studio settings loading
+        self.wallpaper_enable_switch.setChecked_silent(s.get("wallpaper_enabled", False))
+        wp_type = s.get("wallpaper_type", "static")
+        self.wallpaper_type_combo.setCurrentText("Live Video" if wp_type == "video" else "Static Image")
+        wp_path = s.get("wallpaper_path", "")
+        self.wallpaper_path_input.setText(wp_path)
+        scaling_mode = s.get("wallpaper_scaling_mode", "fill").capitalize()
+        self.wallpaper_scaling_combo.setCurrentText(scaling_mode)
+        self.wallpaper_display_combo.setCurrentText(s.get("wallpaper_display_mode", "Primary Display"))
+
+        self.wallpaper_vinyl_size_slider.setValue(int(s.get("wallpaper_vinyl_size", 0.20) * 100))
+        self.wallpaper_vinyl_opacity_slider.setValue(s.get("wallpaper_vinyl_opacity", 100))
+        self.wallpaper_rotation_speed_slider.setValue(int(s.get("wallpaper_rotation_speed", 12.0)))
+
+        self.wallpaper_rotate_playing_switch.setChecked_silent(s.get("wallpaper_rotate_while_playing", True))
+        self.wallpaper_pause_on_music_switch.setChecked_silent(s.get("wallpaper_pause_on_music_pause", True))
+        self.wallpaper_show_title_switch.setChecked_silent(s.get("wallpaper_show_title", True))
+        self.wallpaper_show_artist_switch.setChecked_silent(s.get("wallpaper_show_artist", True))
+        self.wallpaper_pause_battery_switch.setChecked_silent(s.get("wallpaper_pause_on_battery", False))
+        self.wallpaper_pause_fullscreen_switch.setChecked_silent(s.get("wallpaper_pause_on_fullscreen", False))
+
+        if hasattr(self, 'wallpaper_preview'):
+            self.wallpaper_preview.set_background(wp_path, s.get("wallpaper_scaling_mode", "fill"))
+            self._sync_wallpaper_preview_config()
+
         self._refresh_media_sources()
 
     def _update_preview(self):
@@ -1491,10 +1718,15 @@ class SettingsDialog(QDialog):
         if hasattr(self, 'vis_preview'):
             self.vis_preview.update_style(s)
 
-        # Update Now Playing pill title
+        if hasattr(self, 'wallpaper_preview'):
+            self._sync_wallpaper_preview_config()
+
+        # Update Now Playing pill title and wallpaper preview media state
         parent_widget = self.parent()
         if parent_widget and hasattr(parent_widget, 'current_song_title') and parent_widget.current_song_title:
             self.title_bar.set_now_playing(f"{parent_widget.current_song_artist} - {parent_widget.current_song_title}")
+            if hasattr(self, 'wallpaper_preview') and hasattr(parent_widget, 'wallpaper_manager'):
+                self.wallpaper_preview.set_media(parent_widget.wallpaper_manager.get_media())
 
     def _gather_settings(self) -> Dict[str, Any]:
         selected_source_id = self.source_combo.currentData()
@@ -1566,6 +1798,24 @@ class SettingsDialog(QDialog):
             "visualizer_overlay_margin": self.vis_overlay_margin_slider.value(),
             "visualizer_follow_active_window": self.vis_follow_window_switch.isChecked(),
             "visualizer_overlay_inactive_behavior": self.vis_inactive_behavior_combo.currentText(),
+
+            # Desktop Wallpaper System Settings
+            "wallpaper_enabled": self.wallpaper_enable_switch.isChecked(),
+            "wallpaper_type": "video" if self.wallpaper_type_combo.currentText() == "Live Video" else "static",
+            "wallpaper_path": self.wallpaper_path_input.text().strip(),
+            "wallpaper_scaling_mode": self.wallpaper_scaling_combo.currentText().lower().split()[0],
+            "wallpaper_display_mode": self.wallpaper_display_combo.currentText(),
+            "wallpaper_vinyl_x": self.working_settings.get("wallpaper_vinyl_x", 0.78),
+            "wallpaper_vinyl_y": self.working_settings.get("wallpaper_vinyl_y", 0.65),
+            "wallpaper_vinyl_size": self.wallpaper_vinyl_size_slider.value() / 100.0,
+            "wallpaper_vinyl_opacity": self.wallpaper_vinyl_opacity_slider.value(),
+            "wallpaper_rotation_speed": float(self.wallpaper_rotation_speed_slider.value()),
+            "wallpaper_show_title": self.wallpaper_show_title_switch.isChecked(),
+            "wallpaper_show_artist": self.wallpaper_show_artist_switch.isChecked(),
+            "wallpaper_rotate_while_playing": self.wallpaper_rotate_playing_switch.isChecked(),
+            "wallpaper_pause_on_music_pause": self.wallpaper_pause_on_music_switch.isChecked(),
+            "wallpaper_pause_on_battery": self.wallpaper_pause_battery_switch.isChecked(),
+            "wallpaper_pause_on_fullscreen": self.wallpaper_pause_fullscreen_switch.isChecked(),
         }
 
     def _on_apply(self):

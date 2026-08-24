@@ -72,6 +72,7 @@ PALETTE = Palette()
 
 ICONS = {
     # Tabs & Sections
+    "wallpaper": "ph.image",
     "visualizer": "ph.waveform",
     "waveform": "ph.waveform",
     "equalizer": "ph.equalizer",

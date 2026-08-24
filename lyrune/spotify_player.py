@@ -6,7 +6,7 @@ import asyncio
 import subprocess
 import threading
 from typing import Dict, Any, Optional, Tuple, List
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from lyrune.logger import log_event, log_once
 
@@ -44,11 +44,11 @@ class MediaWorkerThread(QThread):
             self._scan_requested = True
 
     def run(self):
-        # Initialize COM for WinRT
+        # Initialize COM for WinRT using MTA (Multithreaded Apartment)
         self._com_initialized = False
         if sys.platform == "win32":
             try:
-                res = ctypes.windll.ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED for WinRT async dispatch
+                res = ctypes.windll.ole32.CoInitializeEx(None, 0)  # 0 = COINIT_MULTITHREADED (MTA)
                 # S_OK = 0, S_FALSE = 1 (already initialized on this thread)
                 if res in (0, 1):
                     self._com_initialized = True
@@ -76,9 +76,9 @@ class MediaWorkerThread(QThread):
                     except Exception as e:
                         log_event(f"[MediaWorkerThread] Source scan error: {e}")
 
-                # Regular media query with 0.5s timeout for zero latency
+                # Regular media query with 1.5s timeout for resilience
                 try:
-                    info = loop.run_until_complete(asyncio.wait_for(self.player._fetch_winrt_async(), timeout=0.5))
+                    info = loop.run_until_complete(asyncio.wait_for(self.player._fetch_winrt_async(), timeout=1.5))
                     if info:
                         self.media_updated.emit(info)
                 except asyncio.TimeoutError:
@@ -111,7 +111,7 @@ class MediaWorkerThread(QThread):
             log_event("[MediaWorkerThread] Worker loop stopped, COM uninitialized.")
 
 
-class SpotifyPlayer:
+class SpotifyPlayer(QObject):
     """
     Interfaces with Spotify on Windows and Linux.
 
@@ -127,7 +127,8 @@ class SpotifyPlayer:
       - Window title fallback no longer assumes 'Playing' status blindly.
     """
 
-    def __init__(self):
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self._is_windows = (sys.platform == "win32")
         self._mode: Optional[str] = None
 
@@ -138,6 +139,8 @@ class SpotifyPlayer:
         self._last_track_id: str = ""
         self._last_status: str = ""
         self._track_duration: float = 0.0  # For position capping
+        self._last_art_track_id: str = ""
+        self._cached_art_bytes: Optional[bytes] = None
 
         self._target_source: str = "Auto-Detect"
 
@@ -149,6 +152,8 @@ class SpotifyPlayer:
         self._cached_info: Dict[str, Any] = {
             'title': None,
             'artist': None,
+            'album': None,
+            'album_art_bytes': None,
             'position': 0.0,
             'duration': 0.0,
             'status': 'Unknown',
@@ -181,7 +186,8 @@ class SpotifyPlayer:
 
     def _on_worker_update(self, info: dict):
         """Receives media info from background thread via Qt signal (thread-safe delivery)."""
-        self._cached_info = info
+        with self._state_lock:
+            self._cached_info = info
 
     def _init_backend(self) -> None:
         if self._is_windows:
@@ -222,7 +228,8 @@ class SpotifyPlayer:
     def get_playback_info(self) -> Dict[str, Any]:
         """Instant O(1) non-blocking read from cached state."""
         if self._mode == 'winrt':
-            return self._cached_info
+            with self._state_lock:
+                return dict(self._cached_info)
         elif self._mode == 'dbus-python':
             return self._get_info_dbus_python()
         elif self._mode == 'gio':
@@ -460,22 +467,19 @@ class SpotifyPlayer:
                         if ' - ' in norm_t or ' | ' in norm_t:
                             lower_t = norm_t.lower().strip()
                             if not any(ign in lower_t for ign in ignored_keywords):
-                                if self._target_source != "Auto-Detect":
-                                    lower_tgt = self._target_source.lower().strip()
-                                    # Same rule as the GSMTC matcher: a target
-                                    # that is a specific session id must match the
-                                    # title exactly; otherwise any Brave/Chrome
-                                    # window (e.g. a movie-streaming tab) would be
-                                    # mistaken for the Spotify track.
-                                    is_session_id = '_crx_' in lower_tgt or '.exe' in lower_tgt
-                                    if (lower_tgt in lower_t or lower_t in lower_tgt or
-                                            (not is_session_id and any(b in lower_tgt and b in lower_t for b in ['brave', 'spotify', 'chrome', 'edge', 'firefox']))):
-                                        found_title = norm_t
-                                else:
-                                    # Matches Brave, Chrome, Edge, Firefox, or Spotify window titles
-                                    if any(browser in lower_t for browser in ['brave', 'chrome', 'edge', 'firefox', 'opera', 'spotify']):
-                                        found_title = norm_t
-                                    elif ' - song and lyrics by ' in lower_t or 'spotify' in lower_t:
+                                # Must be a recognizable music source to avoid matching random web tabs/code editors
+                                is_spotify_app = ('spotify' in lower_t and not any(b in lower_t for b in ['chrome', 'brave', 'edge', 'firefox', 'opera']))
+                                is_spotify_web = (' - spotify' in lower_t or ' | spotify' in lower_t or ' - song and lyrics by ' in lower_t)
+                                is_music_site = any(m in lower_t for m in ['youtube music', 'soundcloud', 'deezer', 'tidal', 'apple music', 'pandora'])
+
+                                if is_spotify_app or is_spotify_web or is_music_site:
+                                    if self._target_source != "Auto-Detect":
+                                        lower_tgt = self._target_source.lower().strip()
+                                        is_session_id = '_crx_' in lower_tgt or '.exe' in lower_tgt
+                                        if (lower_tgt in lower_t or lower_t in lower_tgt or
+                                                (not is_session_id and any(b in lower_tgt and b in lower_t for b in ['brave', 'spotify', 'chrome', 'edge', 'firefox']))):
+                                            found_title = norm_t
+                                    else:
                                         found_title = norm_t
 
             win32gui.EnumWindows(enum_cb, None)
@@ -499,18 +503,42 @@ class SpotifyPlayer:
 
                     log_once(f"window_title_match_{track_id}", f"[Window Title Match] Found '{found_title}' -> Artist: '{c_art}', Title: '{c_tit}'")
 
-                    return {
+                    ret = {
                         'title': c_tit,
                         'artist': c_art,
+                        'album': None,
+                        'album_art_bytes': None,
                         'position': max(0.0, calc_pos),
                         'duration': 0.0,
                         'status': 'Playing',
                         'is_running': True
                     }
+                    with self._state_lock:
+                        self._cached_info = ret
+                    return ret
         except Exception as e:
             log_event(f"[Window Title Fallback Exception] {e}")
 
         return result
+
+    @staticmethod
+    async def _extract_stream_bytes_async(stream_ref) -> Optional[bytes]:
+        """Extracts raw bytes from a WinRT IRandomAccessStreamReference."""
+        if not stream_ref:
+            return None
+        try:
+            import winrt.windows.storage.streams as streams
+            stream = await asyncio.wait_for(stream_ref.open_read_async(), timeout=0.3)
+            if not stream or stream.size == 0:
+                return None
+            size = stream.size
+            reader = streams.DataReader(stream.get_input_stream_at(0))
+            await asyncio.wait_for(reader.load_async(size), timeout=0.3)
+            buf = bytearray(size)
+            reader.read_bytes(buf)
+            return bytes(buf)
+        except Exception:
+            return None
 
     async def _fetch_winrt_async(self) -> Dict[str, Any]:
         """
@@ -518,19 +546,19 @@ class SpotifyPlayer:
         Thread-safe interpolation state updates via self._state_lock.
         """
         result = {
-            'title': None, 'artist': None, 'position': 0.0,
-            'duration': 0.0, 'status': 'Unknown', 'is_running': False
+            'title': None, 'artist': None, 'album': None, 'album_art_bytes': None,
+            'position': 0.0, 'duration': 0.0, 'status': 'Unknown', 'is_running': False
         }
         try:
-            # Reuse cached manager to avoid 12.5 Hz request_async IPC flooding
-            if not hasattr(self, '_gsm_manager') or self._gsm_manager is None:
+            # Reuse cached manager on the worker thread to avoid 12.5 Hz request_async IPC flooding
+            if not hasattr(self, '_worker_gsm_manager') or self._worker_gsm_manager is None:
                 try:
-                    self._gsm_manager = await self._wmc.GlobalSystemMediaTransportControlsSessionManager.request_async()
+                    self._worker_gsm_manager = await self._wmc.GlobalSystemMediaTransportControlsSessionManager.request_async()
                 except Exception as ex:
                     log_event(f"[GSMTC Manager Request Exception] {ex}", force=True)
                     return result
 
-            manager = self._gsm_manager
+            manager = self._worker_gsm_manager
             if not manager:
                 return result
 
@@ -610,6 +638,7 @@ class SpotifyPlayer:
                         c_art, c_tit = self._clean_track_info(p.title, p.artist)
                         if c_tit:
                             session = curr
+                            props = p
                             clean_artist, clean_title = c_art, c_tit
 
             if not session or not clean_title:
@@ -663,7 +692,10 @@ class SpotifyPlayer:
             track_id = f"{clean_artist} - {clean_title}"
             now = time.time()
 
-            # Thread-safe position interpolation
+            # Thread-safe position interpolation and album art caching
+            album_title = getattr(props, 'album_title', '') if props else ''
+            art_bytes = None
+
             with self._state_lock:
                 if track_id != self._last_track_id:
                     self._last_track_id = track_id
@@ -672,6 +704,7 @@ class SpotifyPlayer:
                     self._track_duration = duration
                     calc_pos = effective_raw_pos
                     log_event(f"[Detected Track] '{clean_artist} - {clean_title}' (Status: {status_str}, Pos: {effective_raw_pos:.2f}s, Duration: {duration:.0f}s)")
+                    need_fetch_art = True
                 elif status_str == "Playing":
                     if abs(effective_raw_pos - self._last_raw_pos) > 0.5:
                         # Position updated from GSMTC (e.g. seek or progress update)
@@ -683,29 +716,51 @@ class SpotifyPlayer:
                         calc_pos = self._last_raw_pos + elapsed
                     if duration > 0:
                         self._track_duration = duration
+                    need_fetch_art = (track_id != self._last_art_track_id or self._cached_art_bytes is None)
+                    art_bytes = self._cached_art_bytes
                 else:
                     self._last_update_time = now
                     calc_pos = self._last_raw_pos if self._last_raw_pos > 0 else effective_raw_pos
+                    need_fetch_art = (track_id != self._last_art_track_id or self._cached_art_bytes is None)
+                    art_bytes = self._cached_art_bytes
 
                 # Cap position against track duration to prevent unbounded drift
                 if self._track_duration > 0 and calc_pos > self._track_duration:
                     calc_pos = self._track_duration
+
+            # Fetch artwork asynchronously outside the state lock if needed
+            if need_fetch_art:
+                fetched_art = None
+                if props and hasattr(props, 'thumbnail') and props.thumbnail:
+                    try:
+                        fetched_art = await self._extract_stream_bytes_async(props.thumbnail)
+                    except Exception:
+                        fetched_art = None
+                with self._state_lock:
+                    self._last_art_track_id = track_id
+                    self._cached_art_bytes = fetched_art
+                    art_bytes = fetched_art
 
             # Throttled status logging — only log on status change
             if status_str != self._last_logged_status:
                 self._last_logged_status = status_str
                 log_event(f"[Playback] Status changed to: {status_str} at {calc_pos:.2f}s")
 
-            return {
+            ret = {
                 'title': clean_title,
                 'artist': clean_artist,
+                'album': album_title,
+                'album_art_bytes': art_bytes,
                 'position': max(0.0, calc_pos),
                 'duration': duration,
                 'status': status_str,
                 'is_running': True
             }
+            with self._state_lock:
+                self._cached_info = ret
+            return ret
         except Exception as e:
-            self._gsm_manager = None  # Reset manager so next call re-requests a fresh session manager
+            self._worker_gsm_manager = None  # Reset manager so next call re-requests a fresh session manager
             log_event(f"[GSMTC Fetch Exception] {type(e).__name__}: {e}", force=True)
             return result
 

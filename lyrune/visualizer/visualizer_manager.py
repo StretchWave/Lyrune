@@ -88,7 +88,7 @@ class VisualizerManager(QObject):
             self._apply_game_overlay_position()
             self._start_game_tracking()
 
-        enabled = s.get("visualizer_enabled", True)
+        enabled = s.get("visualizer_enabled", False)
         if enabled and not self._manually_hidden:
             self.window.show()
             self.audio_source.start()
@@ -303,7 +303,7 @@ class VisualizerManager(QObject):
 
         self.window.apply_settings(s)
 
-        enabled = s.get("visualizer_enabled", True)
+        enabled = s.get("visualizer_enabled", False)
         if enabled:
             if not self.window.isVisible() and not self._manually_hidden and not self._game_overlay_hidden_by_inactive:
                 self.window.show()

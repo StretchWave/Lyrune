@@ -22,6 +22,7 @@ from lyrune.logger import log_event
 from lyrune.animation_engine import LyricsRenderer
 from lyrune.ui_theme import get_icon, get_app_icon, MENU_STYLESHEET
 from lyrune.visualizer import VisualizerManager
+from lyrune.wallpaper import WallpaperManager
 from lyrune.window_utils import (
     calculate_edge_snap,
     constrain_to_work_area,
@@ -57,6 +58,11 @@ class LyricsWidget(QWidget):
 
         # Standalone Visualizer Subsystem (independent floating window & pipeline)
         self.visualizer_manager = VisualizerManager(self.settings_mgr, self.player)
+
+        # Desktop Wallpaper Subsystem (WorkerW desktop hosted rendering)
+        self.wallpaper_manager = WallpaperManager(self.settings_mgr, parent=self)
+        if self.settings_mgr.get("wallpaper_enabled", False):
+            self.wallpaper_manager.start()
 
         # Set app-wide icon (taskbar + all windows)
         app = QApplication.instance()
@@ -349,6 +355,23 @@ class LyricsWidget(QWidget):
 
         self.tray_menu.addMenu(self.vis_menu)
 
+        # Desktop Wallpaper Submenu
+        self.wallpaper_menu = QMenu("Desktop Wallpaper", self.tray_menu)
+        self.wallpaper_menu.setIcon(get_icon("wallpaper"))
+        self.wallpaper_menu.setStyleSheet(MENU_STYLESHEET)
+
+        self.action_wallpaper_enable = QAction("Enable Wallpaper Engine", self)
+        self.action_wallpaper_enable.setCheckable(True)
+        self.action_wallpaper_enable.setChecked(self.settings_mgr.get("wallpaper_enabled", False))
+        self.action_wallpaper_enable.triggered.connect(self._toggle_wallpaper_enabled_from_tray)
+        self.wallpaper_menu.addAction(self.action_wallpaper_enable)
+
+        self.action_wallpaper_settings = QAction("Configure Wallpaper...", self)
+        self.action_wallpaper_settings.triggered.connect(self._open_wallpaper_settings)
+        self.wallpaper_menu.addAction(self.action_wallpaper_settings)
+
+        self.tray_menu.addMenu(self.wallpaper_menu)
+
         self.tray_menu.addSeparator()
 
         self.action_exit = QAction(get_icon("exit"), "Exit", self)
@@ -571,11 +594,15 @@ class LyricsWidget(QWidget):
         if hasattr(self, 'visualizer_manager'):
             self.visualizer_manager.apply_settings(s)
             if hasattr(self, 'action_vis_enable'):
-                self.action_vis_enable.setChecked(s.get("visualizer_enabled", True))
+                self.action_vis_enable.setChecked(s.get("visualizer_enabled", False))
             if hasattr(self, 'action_vis_top'):
                 self.action_vis_top.setChecked(s.get("visualizer_always_on_top", True))
             if hasattr(self, 'action_vis_click_through'):
                 self.action_vis_click_through.setChecked(s.get("visualizer_click_through", False))
+
+        # Update wallpaper subsystem
+        if hasattr(self, 'wallpaper_manager'):
+            self.wallpaper_manager.apply_config(s)
 
     def _update_widget_border(self, bg_rgba: Optional[str] = None, border: bool = False):
         """Sets the translucent background via a *constant* stylesheet.
@@ -623,6 +650,10 @@ class LyricsWidget(QWidget):
         if hasattr(self, 'visualizer_manager'):
             self.visualizer_manager.update_playback_state(info)
 
+        # Propagate live playback state to wallpaper subsystem
+        if hasattr(self, 'wallpaper_manager'):
+            self.wallpaper_manager.update_media_state(info)
+
         # Windows Z-guard: maintain topmost Z-order above fullscreen games without stealing focus
         if sys.platform == "win32" and self.isVisible() and self.settings_mgr.get("always_on_top", True):
             hwnd = int(self.winId()) if self.winId() else 0
@@ -665,11 +696,10 @@ class LyricsWidget(QWidget):
         if status == "Paused":
             if self.settings_mgr.get("auto_hide_on_pause", False) and self.isVisible():
                 self.hide()
-            return
-
-        # If we were auto-hidden and playback resumed, show again (unless user manually hid via shortcut/tray)
-        if self.settings_mgr.get("auto_hide_on_pause", False) and not self.isVisible() and not getattr(self, '_manually_hidden', False):
-            self.show()
+        else:
+            # If we were auto-hidden and playback resumed, show again (unless user manually hid via shortcut/tray)
+            if self.settings_mgr.get("auto_hide_on_pause", False) and not self.isVisible() and not getattr(self, '_manually_hidden', False):
+                self.show()
 
         # Check per-track offset first, fallback to global offset
         offsets = self.settings_mgr.get("track_sync_offsets", {})
@@ -875,6 +905,17 @@ class LyricsWidget(QWidget):
         self.settings_mgr.set("visualizer_click_through", checked)
         self.visualizer_manager.apply_settings(self.settings_mgr.settings)
 
+    # --- Desktop Wallpaper Tray Handlers ---
+    def _toggle_wallpaper_enabled_from_tray(self, checked: bool):
+        self.settings_mgr.set("wallpaper_enabled", checked)
+        if hasattr(self, 'wallpaper_manager'):
+            self.wallpaper_manager.apply_config(self.settings_mgr.settings)
+
+    def _open_wallpaper_settings(self):
+        self._open_settings()
+        if self.settings_dialog and hasattr(self.settings_dialog, '_switch_page'):
+            self.settings_dialog._switch_page("wallpaper")
+
     # --- Context Menu ---
     def contextMenuEvent(self, event):
         self._update_source_menu()
@@ -930,13 +971,19 @@ class LyricsWidget(QWidget):
         self.settings_mgr.set("window_height", self.height())
 
     def shutdown(self):
-        """Cleanly shuts down player threads, visualizer timers, and saves settings."""
+        """Cleanly shuts down player threads, visualizer timers, wallpaper host, and saves settings."""
+        if hasattr(self, 'wallpaper_manager'):
+            self.wallpaper_manager.shutdown()
         if hasattr(self, 'visualizer_manager'):
             self.visualizer_manager.shutdown()
         if hasattr(self, 'player'):
             self.player.stop_worker_thread()
         if hasattr(self, 'settings_mgr'):
             self.settings_mgr.save_immediate()
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
 
     def _quit_application(self):
         self.shutdown()
