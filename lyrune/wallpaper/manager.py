@@ -43,6 +43,7 @@ class WallpaperCanvas(QWidget):
     def __init__(self, manager: "WallpaperManager", parent=None):
         super().__init__(parent)
         self._manager = manager
+        self._paint_count = 0
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowDoesNotAcceptFocus
@@ -53,24 +54,18 @@ class WallpaperCanvas(QWidget):
         self.setAutoFillBackground(False)
 
     def paintEvent(self, event):
-        """Paints the wallpaper background and vinyl overlay."""
+        """TEST D: Pure solid MAGENTA (#FF00FF) fill on entire canvas to isolate rendering path."""
+        self._paint_count += 1
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-
-        rect = self.rect()
-
-        # Background layer
-        if self._manager._active_renderer and self._manager._use_static_paint:
-            self._manager._active_renderer.paint(painter, rect)
-        elif not self._manager._use_video_mode:
-            # Fallback: solid black
-            painter.fillRect(rect, QColor(0, 0, 0))
-
-        # Vinyl overlay layer
-        if self._manager._config.enabled and self._manager._vinyl_renderer:
-            self._manager._paint_vinyl(painter, rect)
-
+        painter.fillRect(self.rect(), QColor("#FF00FF"))  # Solid bright MAGENTA
         painter.end()
+
+        if self._paint_count <= 5 or self._paint_count % 300 == 1:
+            log_event(
+                f"[Wallpaper Canvas] TEST D paintEvent #{self._paint_count} | "
+                f"Rect: {self.rect().width()}x{self.rect().height()} | "
+                f"Painted solid MAGENTA (#FF00FF)"
+            )
 
 
 class WallpaperManager(QObject):
