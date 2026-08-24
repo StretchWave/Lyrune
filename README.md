@@ -8,25 +8,30 @@
   <img src="https://img.shields.io/badge/License-MIT-brightgreen?style=for-the-badge" alt="License">
 </p>
 
-**Lyrune** is a sleek, lightweight desktop lyrics overlay for **Spotify** and Web Media Players (Brave, Chrome, Edge, Firefox, Opera). It automatically detects what you're playing, fetches synchronized timestamped lyrics from [LRCLIB](https://lrclib.net), and presents them in a modern, frameless, Spotify-styled overlay.
+**Lyrune** is a sleek, lightweight desktop lyrics overlay and audio visualizer for **Spotify** and Web Media Players (Brave, Chrome, Edge, Firefox, Zen, Opera). It automatically detects what you're playing, fetches synchronized timestamped lyrics from [LRCLIB](https://lrclib.net), and renders them alongside a real-time, Mel-scale audio visualizer in a modern, frameless, customizable interface.
 
 ---
 
 ## 🌟 Highlights & Features
 
-- 🎤 **Synchronized LRC Lyrics** — O(log n) real-time timestamp matching with Spotify-style smooth vertical scrolling.
+- 🎤 **Synchronized LRC Lyrics** — $O(\log n)$ real-time timestamp matching with Spotify-style smooth vertical scrolling and customizable active/context line contrast.
+- 📊 **Real-Time Audio Visualizer** — High-resolution 4096-point FFT spectral analysis engine with Mel-scale perceptual frequency grouping, hybrid multi-band AGC, and gradient styling.
 - 🎵 **Multi-Source Playback Detection**:
   - **Windows**: Native System Media Transport Controls (WinRT GSMTC) + Window Title fallback.
-  - **Linux**: MPRIS protocol over D-Bus (`dbus-python`, Gio, `playerctl`).
-- 🎨 **Modern Customizable Overlay**:
+  - **Linux**: Dynamic MPRIS protocol auto-discovery over D-Bus (`dbus-python`, Gio, `playerctl`).
+- 🪟 **Flexible Window Layer Stacking**:
+  - **✨ Always on Top (Foreground)**: Pins the overlay and visualizer above all windows and games.
+  - **🪟 Normal Window**: Behaves like a standard desktop window.
+  - **🖼️ Background / Desktop Layer**: Sits behind all active apps directly on your wallpaper.
+- 🎨 **Modern Customizable Styling**:
   - Spotify Dark, Cinematic Cyan, Neon Pink, High Contrast presets.
   - Custom font family, font size, bold toggles, alignment (Left/Center/Right).
   - Background color & opacity, drop shadow, text contour outline.
   - Per-pixel adaptive contrast color inversion over light/dark backgrounds.
 - ⚙️ **Rich Behavior Controls**:
-  - **Click-Through Mode**: Clicks pass through the overlay to games/desktop.
+  - **Click-Through Mode**: Clicks pass directly through the overlay to underlying windows or games.
   - **Auto-Hide on Pause**: Smoothly hides when media stops/pauses.
-  - **Screen Capture Exclusion**: Hides overlay from OBS / Discord screen sharing (`SetWindowDisplayAffinity`).
+  - **Screen Capture Exclusion**: Hides overlay from OBS / Discord screen sharing (`SetWindowDisplayAffinity` on Windows).
   - **Auto-Resize Height**: Dynamically adapts window height to visible context lines.
   - **Track-Specific Timing Nudges**: Adjust lyric offset live with `Ctrl+Left` / `Ctrl+Right`.
 - 🔍 **Manual Lyric Search & Correction**: Interactive dialog to query LRCLIB and bind custom lyrics to any track.
@@ -34,112 +39,115 @@
 
 ---
 
-## 📦 Easy Installation (Zero Setup Needed)
+## 📦 Installation Guide
 
-### 🪟 For Windows Users (1-Click Executable)
+### 🐧 For Linux Users
 
-1. Download **`Lyrune-Windows-x64.zip`** from the latest [GitHub Release](https://github.com/StretchWave/Lyrune/releases).
-2. Extract the `.zip` folder.
-3. Double-click **`Lyrune.exe`** — **No Python or command-line required!**
+#### 1. One-Line Installer (Recommended)
 
----
-
-### 🐧 For Linux Users (One-Line Installer)
-
-Open your terminal and run this single command:
+Open your terminal and run:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/StretchWave/Lyrune/main/install.sh | bash
 ```
 
-Launch Lyrune anytime by typing:
+Launch Lyrune anytime by running:
+
 ```bash
 lyrune
 ```
 
 ---
 
-### 🐍 For Python Developers (`pip`)
+#### 2. Manual / From Source
 
-```bash
-pip install lyrune
-```
+##### System Prerequisites
 
-Or run directly from source:
+| Distribution               | Required System Packages                                                                                             |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **Arch Linux / Manjaro**   | `sudo pacman -S python python-pip python-pyqt6 pulseaudio-utils libpulse pipewire-pulse dbus glib2`                  |
+| **Ubuntu / Debian / Mint** | `sudo apt update && sudo apt install python3 python3-pip python3-venv libdbus-1-dev libglib2.0-dev pulseaudio-utils` |
+| **Fedora / RHEL**          | `sudo dnf install python3 python3-pip dbus-devel glib2-devel pulseaudio-utils`                                       |
+
+##### Setup Virtual Environment & Run
 
 ```bash
 git clone https://github.com/StretchWave/Lyrune.git
 cd Lyrune
+
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Run Lyrune
 python main.py
 ```
 
 ---
 
-### 📦 Building from Source (PyInstaller)
+### 🪟 For Windows Users (1-Click Executable)
 
-You can freeze Lyrune into a portable Windows executable using the tracked build configs:
-
-```bash
-pip install pyinstaller -r requirements.txt
-pyinstaller --noconfirm Lyrune.spec            # onedir  → dist/Lyrune/
-pyinstaller --noconfirm Lyrune-Standalone.spec  # single  → dist/Lyrune-Standalone.exe
-```
-
-Or directly, without the spec files:
-
-```bash
-pyinstaller --noconfirm --onedir --windowed --name "Lyrune" main.py
-pyinstaller --noconfirm --onefile --windowed --name "Lyrune-Standalone" main.py
-```
-
-On Linux, the onedir build needs the D-Bus dev headers:
-
-```bash
-sudo apt install libdbus-1-dev libglib2.0-dev
-pyinstaller --noconfirm --onedir --windowed --name "Lyrune" main.py
-tar -czvf Lyrune-Linux-x64.tar.gz -C dist/Lyrune .
-```
+1. Download **`Lyrune-Windows-x64.zip`** from the latest [GitHub Release](https://github.com/StretchWave/Lyrune/releases).
+2. Extract the `.zip` folder.
+3. Double-click **`Lyrune.exe`** — **No Python or command-line setup required!**
 
 ---
 
-## 🚀 Releases
+## 🪟 Linux Window Manager & Wayland Guide
 
-Release artifacts are built automatically by the [GitHub Actions workflow](.github/workflows/build-releases.yml) when you push a version tag:
+Lyrune is built with full support for **Wayland** (Hyprland, Sway, KWin, GNOME) and **X11** (i3, bspwm, XFCE).
 
-```bash
-git tag v2.0.0
-git push origin v2.0.0
+### 🚀 Hyprland Configuration
+
+Under tiling window managers like **Hyprland**, add the following window rules to your `~/.config/hypr/hyprland.conf` to ensure Lyrune windows float cleanly without tiling:
+
+```ini
+# Lyrune Overlay & Visualizer Rules
+windowrule {
+    name = lyrune-overlay
+    match:class = ^(lyrune)$
+    float = 1
+    no_blur = 1
+    border_size = 0
+    no_shadow = 1
+    no_initial_focus = 1
+}
 ```
 
-The workflow builds **Windows** (onedir + single-file standalone) and **Linux** (onedir) and attaches them to a GitHub Release:
+_Or using the `windowrulev2` format:_
 
-| Artifact | Description |
-|---|---|
-| `Lyrune-Windows-x64.zip` | Portable onedir folder for Windows |
-| `Lyrune-Standalone-x64.exe` | Single-file Windows executable |
-| `Lyrune-Linux-x64.tar.gz` | Portable onedir folder for Linux |
+```ini
+windowrulev2 = float, class:^(lyrune)$
+windowrulev2 = noblur, class:^(lyrune)$
+windowrulev2 = border_size 0, class:^(lyrune)$
+windowrulev2 = noinitialfocus, class:^(lyrune)$
+```
 
-> The Windows Inno Setup installer (`Lyrune-Setup.exe`) is built locally from `installer.iss` using Inno Setup's `ISCC.exe`.
+### 📐 Adjusting Window Size & Position on Linux
+
+1. **Mouse Dragging**: Left-click and drag anywhere on the lyrics background or visualizer to move it freely.
+2. **Corner Resize**: Drag the bottom-right corner grip on the lyrics overlay.
+3. **Hyprland Direct Resize**: Hold **`Super` + Right-Click Drag** over any Lyrune window to dynamically stretch or shrink it.
+4. **Settings Dialog**:
+   - Open **Settings** → **Behavior** to set exact pixel widths/heights and use quick position presets (`Center Bottom`, `Center Top`, `Center Screen`, `Reset Default`).
+   - Open **Settings** → **Visualizer Studio** to adjust visualizer logical length, thickness, bar width, and edge attachments.
+5. **Auto-Persistence**: Coordinates and sizes are automatically remembered and restored from `~/.config/Lyrune/settings.json`.
 
 ---
 
-## 🚀 Usage Guide
+## ⌨️ Default Hotkeys
 
-1. **Launch Lyrune** — The app starts minimized in your **System Tray** (bottom right near clock).
-2. **Play Music** — Start playing any track on Spotify Desktop or supported web browser.
-3. **Control & Customize**:
-   - Right-click the **System Tray Icon** or overlay to open **Settings**.
-   - Drag to reposition (when unlocked); resize using bottom-right corner grip.
-
-### ⌨️ Default Hotkeys
-
-| Shortcut | Action |
-|---|---|
-| `Ctrl+H` | Toggle Overlay Visibility |
-| `Ctrl+R` / `F5` | Force Refresh / Reload Lyrics for current song |
-| `Ctrl+Left` | Nudge timing **−250ms** (lyrics appear earlier) |
-| `Ctrl+Right` | Nudge timing **+250ms** (lyrics appear later) |
+| Shortcut        | Action                                                   |
+| --------------- | -------------------------------------------------------- |
+| `Ctrl+H`        | Toggle Lyrics Overlay Visibility                         |
+| `Ctrl+Shift+V`  | Toggle Audio Visualizer Visibility                       |
+| `Ctrl+Shift+G`  | Toggle Game Overlay Mode (Pinned on active game monitor) |
+| `Ctrl+R` / `F5` | Force Refresh / Reload Lyrics for current song           |
+| `Ctrl+Left`     | Nudge timing **−250ms** (lyrics appear earlier)          |
+| `Ctrl+Right`    | Nudge timing **+250ms** (lyrics appear later)            |
 
 ---
 
@@ -151,7 +159,7 @@ Lyrune/
 │   ├── __init__.py            # Package metadata & version
 │   ├── __main__.py            # Module CLI entry point (python -m lyrune)
 │   ├── main.py                # Main Qt Application setup & System Tray initialization
-│   ├── lyrics_widget.py       # Floating transparent overlay window & mouse event handlers
+│   ├── lyrics_widget.py       # Floating transparent overlay window & mouse handlers
 │   ├── settings_dialog.py     # Frameless settings dialog with live preview & logs drawer
 │   ├── settings_manager.py    # Atomic persistent JSON config manager & debounced save
 │   ├── animation_engine.py    # Spotify-style custom QPainter smooth scrolling engine
@@ -159,15 +167,22 @@ Lyrune/
 │   ├── spotify_player.py      # Cross-platform media playback detector (WinRT / MPRIS)
 │   ├── lrc_parser.py          # Fast bisect-based LRC timestamp parser
 │   ├── logger.py              # Thread-safe RLock logger & live diagnostic listener
-│   └── ui_theme.py            # Dark palette, qtawesome vector icons & custom widgets
+│   ├── ui_theme.py            # Dark palette, qtawesome vector icons & custom widgets
+│   ├── window_utils.py        # Multi-monitor geometry, snapping, & Hyprland/Wayland IPC
+│   └── visualizer/            # Real-time audio visualizer subsystem
+│       ├── __init__.py        # Visualizer exports
+│       ├── audio_source.py    # PipeWire/PulseAudio parec capture & AudioDSP FFT engine
+│       ├── bar_visualizer.py  # QPainter Pill/Bar renderer with spring physics
+│       ├── visualizer_window.py # Independent floating visualizer window
+│       └── visualizer_manager.py # Multi-monitor game overlay & layout coordinator
 ├── main.py                    # Root entry point launcher
 ├── Lyrune.spec                # PyInstaller onedir build config
 ├── Lyrune-Standalone.spec     # PyInstaller single-file build config
 ├── pyproject.toml             # PEP 517 build & packaging definition
 ├── requirements.txt           # Python dependencies list
-├── install.sh                 # Linux one-line installer
+├── install.sh                 # Linux one-line installer script
 ├── installer.iss              # Windows Inno Setup installer script
-├── .github/workflows/         # CI: builds Windows & Linux release artifacts on tags
+├── .github/workflows/         # CI/CD: builds Windows & Linux release artifacts on tags
 ├── CHANGELOG.md               # Version history
 ├── AUDIT.md                   # Code audit & roadmap
 ├── LICENSE                    # MIT License
@@ -176,12 +191,26 @@ Lyrune/
 
 ---
 
+## 📦 Building Releases
+
+```bash
+# Package onedir release for Linux:
+pyinstaller --noconfirm --onedir --windowed --name "Lyrune" main.py
+tar -czvf Lyrune-Linux-x64.tar.gz -C dist/Lyrune .
+
+# Package standalone release for Windows:
+pyinstaller --noconfirm Lyrune-Standalone.spec
+```
+
+---
+
 ## 🤝 Contributing
 
 Contributions, bug reports, and feature requests are welcome!
+
 1. Fork the Project
 2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+3. Commit your Changes (`git commit -m 'feat: add amazing feature'`)
 4. Push to the Branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
