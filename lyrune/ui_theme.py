@@ -16,7 +16,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QPushButton, QLabel, QSlider, QHBoxLayout,
     QVBoxLayout, QGraphicsDropShadowEffect, QSizePolicy, QLineEdit, QColorDialog,
-    QStackedWidget, QGraphicsOpacityEffect
+    QStackedWidget, QGraphicsOpacityEffect, QScrollArea, QFormLayout
 )
 
 
@@ -1133,9 +1133,13 @@ class ValueSlider(QWidget):
     def value(self) -> int:
         return self.slider.value()
 
-    def setValue(self, v: int):
-        self.slider.setValue(v)
-        self.lbl_val.setText(f"{v}{self._suffix}")
+    def setValue(self, v):
+        try:
+            iv = int(round(float(v)))
+        except (ValueError, TypeError):
+            iv = 0
+        self.slider.setValue(iv)
+        self.lbl_val.setText(f"{iv}{self._suffix}")
 
 
 # ==============================================================================
@@ -1274,6 +1278,474 @@ class MetricGaugeCard(GlassCard):
         self.lbl_val.setText(value)
         if sublabel:
             self.lbl_sub.setText(sublabel)
+
+
+# ==============================================================================
+# CollapsibleSection — Animated Expandable Glass Section
+# ==============================================================================
+
+class CollapsibleSection(QWidget):
+    """
+    Expandable/collapsible section with glass styling, animated toggle,
+    and a header that shows a chevron arrow. Used for 'Advanced' sections
+    in the progressive disclosure pattern.
+    """
+    toggled = pyqtSignal(bool)
+
+    def __init__(self, title: str = "Advanced", collapsed: bool = True, parent: QWidget = None):
+        super().__init__(parent)
+        self._collapsed = collapsed
+        self._title = title
+        self._animation_height = 0
+
+        self._root_layout = QVBoxLayout(self)
+        self._root_layout.setContentsMargins(0, 0, 0, 0)
+        self._root_layout.setSpacing(0)
+
+        # Header button
+        self._header = QPushButton(self)
+        self._header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._header.setFixedHeight(32)
+        self._header.clicked.connect(self._toggle)
+        self._root_layout.addWidget(self._header)
+
+        # Content container
+        self._content = QWidget(self)
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(0, 6, 0, 4)
+        self._content_layout.setSpacing(8)
+        self._root_layout.addWidget(self._content)
+
+        self._update_header_style()
+        self._content.setVisible(not collapsed)
+
+    def content_layout(self) -> QVBoxLayout:
+        """Return the layout to add child widgets into."""
+        return self._content_layout
+
+    def add_widget(self, widget: QWidget) -> None:
+        """Convenience: add a widget to the content area."""
+        self._content_layout.addWidget(widget)
+
+    def add_layout(self, layout) -> None:
+        """Convenience: add a layout to the content area."""
+        self._content_layout.addLayout(layout)
+
+    def _toggle(self):
+        self._collapsed = not self._collapsed
+        self._content.setVisible(not self._collapsed)
+        self._update_header_style()
+        self.toggled.emit(not self._collapsed)
+
+    def set_collapsed(self, collapsed: bool):
+        self._collapsed = collapsed
+        self._content.setVisible(not collapsed)
+        self._update_header_style()
+
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def _update_header_style(self):
+        arrow = "▸" if self._collapsed else "▾"
+        self._header.setText(f"  {arrow}  {self._title}")
+        self._header.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255, 255, 255, 0.03);
+                color: #8A8D9B;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+                text-align: left;
+                padding-left: 6px;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 255, 255, 0.06);
+                color: #C5C8D4;
+                border-color: rgba(255, 255, 255, 0.10);
+            }}
+        """)
+
+
+# ==============================================================================
+# SubSectionTabs — Horizontal Pill Tab Bar for Subsections
+# ==============================================================================
+
+class SubSectionTabs(QWidget):
+    """
+    Horizontal row of pill-shaped tabs for switching subsections within a page.
+    Each tab is a QPushButton styled as a pill. Emits `tabChanged(int)` when
+    the active tab changes.
+    """
+    tabChanged = pyqtSignal(int)
+
+    def __init__(self, tabs: list, parent: QWidget = None):
+        """
+        Args:
+            tabs: List of tab label strings, e.g. ["Content", "Typography", "Layout"]
+        """
+        super().__init__(parent)
+        self._tabs = tabs
+        self._active = 0
+        self._buttons: list = []
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 4)
+        layout.setSpacing(4)
+
+        for idx, label in enumerate(tabs):
+            btn = QPushButton(label, self)
+            btn.setFixedHeight(28)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setMinimumWidth(max(50, len(label) * 8 + 16))
+            btn.clicked.connect(lambda _, i=idx: self._switch(i))
+            layout.addWidget(btn)
+            self._buttons.append(btn)
+
+        layout.addStretch()
+        self._update_styles()
+
+    def _switch(self, index: int):
+        if index != self._active:
+            self._active = index
+            self._update_styles()
+            self.tabChanged.emit(index)
+
+    def set_active(self, index: int):
+        if 0 <= index < len(self._buttons):
+            self._active = index
+            self._update_styles()
+
+    def active_index(self) -> int:
+        return self._active
+
+    def _update_styles(self):
+        for i, btn in enumerate(self._buttons):
+            if i == self._active:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(46, 213, 115, 0.18);
+                        color: #2ED573;
+                        font-size: 11px;
+                        font-weight: 700;
+                        border: 1px solid rgba(46, 213, 115, 0.35);
+                        border-radius: 14px;
+                        padding: 0 12px;
+                    }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(30, 35, 46, 0.45);
+                        color: #8A8D9B;
+                        font-size: 11px;
+                        font-weight: 600;
+                        border: 1px solid rgba(255, 255, 255, 0.06);
+                        border-radius: 14px;
+                        padding: 0 12px;
+                    }
+                    QPushButton:hover {
+                        background: rgba(255, 255, 255, 0.06);
+                        color: #C5C8D4;
+                    }
+                """)
+
+
+# ==============================================================================
+# SettingsSearchDialog — Full-text Settings Search with Deep Navigation
+# ==============================================================================
+
+class SettingsSearchDialog(QWidget):
+    """
+    Full-text fuzzy search modal for all registered settings.
+    Displays grouped results (Page → Section → Setting) and emits
+    `settingSelected(setting_id)` when a result is activated.
+
+    Supports keyboard navigation: Arrow Up/Down, Enter, Escape.
+    """
+    settingSelected = pyqtSignal(str)  # setting_id
+    actionTriggered = pyqtSignal(str)  # for legacy compat with command palette actions
+
+    def __init__(self, parent=None):
+        from lyrune.settings_registry import SETTINGS_REGISTRY
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(580, 420)
+        self._registry = SETTINGS_REGISTRY
+        self._result_buttons: list = []
+        self._selected_idx = -1
+        self._init_ui()
+
+    def _init_ui(self):
+        from PyQt6.QtWidgets import QScrollArea
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+
+        card = GlassCard(radius=16, elevated=True, parent=self)
+        c_layout = QVBoxLayout(card)
+        c_layout.setContentsMargins(14, 14, 14, 14)
+        c_layout.setSpacing(8)
+
+        # Search box
+        search_h = QHBoxLayout()
+        lbl_icon = QLabel(self)
+        lbl_icon.setPixmap(get_icon("search", "#2ED573", 16).pixmap(16, 16))
+        self.txt_search = QLineEdit(self)
+        self.txt_search.setPlaceholderText("Search settings (e.g. 'font', 'opacity', 'shadow', 'lyrics sync')...")
+        self.txt_search.setStyleSheet("""
+            QLineEdit {
+                background: rgba(15, 18, 25, 0.6);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+                padding: 6px 10px;
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border-color: #2ED573;
+            }
+        """)
+        self.txt_search.textChanged.connect(self._on_search)
+        search_h.addWidget(lbl_icon)
+        search_h.addWidget(self.txt_search, 1)
+        c_layout.addLayout(search_h)
+
+        # Hint label
+        self.lbl_hint = QLabel("Type to search across all settings, controls, and pages", self)
+        self.lbl_hint.setStyleSheet("font-size: 10px; color: #525666; padding-left: 4px;")
+        c_layout.addWidget(self.lbl_hint)
+
+        # Results scroll area
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._results_widget = QWidget(self)
+        self._results_layout = QVBoxLayout(self._results_widget)
+        self._results_layout.setContentsMargins(0, 0, 0, 0)
+        self._results_layout.setSpacing(2)
+        self._scroll.setWidget(self._results_widget)
+        c_layout.addWidget(self._scroll, 1)
+
+        root.addWidget(card)
+        self.txt_search.setFocus()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.txt_search.setFocus()
+        self.txt_search.selectAll()
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == Qt.Key.Key_Escape:
+            self.close()
+        elif key == Qt.Key.Key_Down:
+            self._move_selection(1)
+        elif key == Qt.Key.Key_Up:
+            self._move_selection(-1)
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._activate_selection()
+        else:
+            super().keyPressEvent(event)
+
+    def _move_selection(self, delta: int):
+        if not self._result_buttons:
+            return
+        self._selected_idx = max(0, min(len(self._result_buttons) - 1, self._selected_idx + delta))
+        self._update_selection_highlight()
+
+    def _activate_selection(self):
+        if 0 <= self._selected_idx < len(self._result_buttons):
+            btn, setting_id = self._result_buttons[self._selected_idx]
+            self.settingSelected.emit(setting_id)
+            self.close()
+
+    def _update_selection_highlight(self):
+        for i, (btn, _) in enumerate(self._result_buttons):
+            if i == self._selected_idx:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(46, 213, 115, 0.18);
+                        color: #FFFFFF;
+                        border: 1px solid rgba(46, 213, 115, 0.35);
+                        border-radius: 6px;
+                        text-align: left;
+                        font-size: 11px;
+                        padding: 4px 10px;
+                    }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(30, 35, 46, 0.45);
+                        color: #C5C8D4;
+                        border: 1px solid rgba(255, 255, 255, 0.04);
+                        border-radius: 6px;
+                        text-align: left;
+                        font-size: 11px;
+                        padding: 4px 10px;
+                    }
+                    QPushButton:hover {
+                        background: rgba(46, 213, 115, 0.12);
+                        color: #FFFFFF;
+                        border-color: rgba(46, 213, 115, 0.25);
+                    }
+                """)
+
+    def _on_search(self, query: str):
+        # Clear previous results
+        while self._results_layout.count():
+            item = self._results_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._result_buttons.clear()
+        self._selected_idx = -1
+
+        q = query.strip()
+        if not q:
+            self.lbl_hint.setText("Type to search across all settings, controls, and pages")
+            self.lbl_hint.setVisible(True)
+            return
+
+        grouped = self._registry.get_grouped_results(q, max_results=20)
+        if not grouped:
+            self.lbl_hint.setText(f"No results for \"{q}\"")
+            self.lbl_hint.setVisible(True)
+            return
+
+        self.lbl_hint.setVisible(False)
+        total = 0
+
+        for page_name, sections in grouped.items():
+            # Page header
+            page_lbl = QLabel(f"  {page_name.upper()}", self._results_widget)
+            page_lbl.setStyleSheet("font-size: 10px; font-weight: 800; color: #2ED573; letter-spacing: 1px; margin-top: 6px;")
+            self._results_layout.addWidget(page_lbl)
+
+            for section_name, results in sections.items():
+                # Section subheader
+                sec_lbl = QLabel(f"    {section_name}", self._results_widget)
+                sec_lbl.setStyleSheet("font-size: 10px; font-weight: 600; color: #8A8D9B; margin-left: 8px;")
+                self._results_layout.addWidget(sec_lbl)
+
+                for r in results:
+                    btn = QPushButton(f"      {r.meta.name}", self._results_widget)
+                    btn.setFixedHeight(28)
+                    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                    btn.setToolTip(f"{page_name} → {section_name} → {r.meta.name}\n{r.meta.description}")
+                    sid = r.meta.setting_id
+                    btn.clicked.connect(lambda _, s=sid: self._select_result(s))
+                    self._results_layout.addWidget(btn)
+                    self._result_buttons.append((btn, sid))
+                    total += 1
+
+        self._results_layout.addStretch()
+        if self._result_buttons:
+            self._selected_idx = 0
+        self._update_selection_highlight()
+
+    def _select_result(self, setting_id: str):
+        self.settingSelected.emit(setting_id)
+        self.close()
+
+
+# ==============================================================================
+# ResetButton — Contextual Reset Button
+# ==============================================================================
+
+class ResetButton(QPushButton):
+    """Small glass-styled reset button for sections/elements."""
+    def __init__(self, label: str = "Reset", parent: QWidget = None):
+        super().__init__(f"↺ {label}", parent)
+        self.setFixedHeight(24)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 71, 87, 0.08);
+                color: #FF4757;
+                font-size: 10px;
+                font-weight: 700;
+                border: 1px solid rgba(255, 71, 87, 0.20);
+                border-radius: 6px;
+                padding: 0 8px;
+            }
+            QPushButton:hover {
+                background: rgba(255, 71, 87, 0.16);
+                border-color: rgba(255, 71, 87, 0.40);
+            }
+        """)
+
+
+# ==============================================================================
+# TooltipLabel — Info Label with Hover Tooltip
+# ==============================================================================
+
+class TooltipLabel(QWidget):
+    """
+    A label with a small '?' icon that displays a tooltip on hover.
+    Used for non-obvious advanced settings.
+    """
+    def __init__(self, text: str, tooltip: str, parent: QWidget = None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self._label = QLabel(text, self)
+        self._label.setStyleSheet("font-size: 11px; font-weight: 600; color: #8A8D9B;")
+        layout.addWidget(self._label)
+
+        self._info = QLabel("ⓘ", self)
+        self._info.setStyleSheet("font-size: 10px; color: #525666;")
+        self._info.setToolTip(tooltip)
+        self._info.setCursor(Qt.CursorShape.WhatsThisCursor)
+        layout.addWidget(self._info)
+        layout.addStretch()
+
+
+# ==============================================================================
+# PresetSelector — Domain Preset Card Picker
+# ==============================================================================
+
+class PresetSelector(QWidget):
+    """
+    Horizontal row of preset cards for domain-specific presets (Lyrics, Wallpaper, Visualizer).
+    Each card shows the preset name and applies it on click.
+    """
+    presetSelected = pyqtSignal(str)  # preset name
+
+    def __init__(self, presets: dict, parent: QWidget = None):
+        super().__init__(parent)
+        self._presets = presets
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        for name in presets:
+            btn = QPushButton(name, self)
+            btn.setFixedHeight(32)
+            btn.setMinimumWidth(80)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: rgba(30, 35, 46, 0.55);
+                    color: #C5C8D4;
+                    font-size: 11px;
+                    font-weight: 600;
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 8px;
+                    padding: 0 14px;
+                }
+                QPushButton:hover {
+                    background: rgba(46, 213, 115, 0.12);
+                    color: #2ED573;
+                    border-color: rgba(46, 213, 115, 0.30);
+                }
+            """)
+            btn.clicked.connect(lambda _, n=name: self.presetSelected.emit(n))
+            layout.addWidget(btn)
+
+        layout.addStretch()
 
 
 # ==============================================================================

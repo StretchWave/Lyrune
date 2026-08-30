@@ -56,6 +56,13 @@ SHORTCUT_DEFINITIONS = [
         "description": "Open omnibox quick search and command palette",
         "default": "Ctrl+K",
         "category": "Studio"
+    },
+    {
+        "key_id": "shortcut_settings_search",
+        "name": "Search Settings",
+        "description": "Open omnibox settings search and deep navigation",
+        "default": "Ctrl+F",
+        "category": "Studio"
     }
 ]
 
